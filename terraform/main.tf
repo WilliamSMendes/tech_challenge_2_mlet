@@ -16,3 +16,11 @@ terraform {
 provider "aws" {
   region = "us-east-1"
 }
+
+locals {
+  default_tags = {
+    Project     = "TechChallengeV2"
+    Environment = "Dev"
+  }
+  account_id = "818392673747"
+}
