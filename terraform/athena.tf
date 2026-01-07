@@ -13,8 +13,8 @@ resource "aws_athena_workgroup" "etl" {
 }
 
 # Athena Policy (Permissions)
-data "aws_iam_role" "athena_policy" {
-  name = "AthenaPolicy"
+data "aws_iam_role" "github_actions_web_identity" {
+  name = "github-actions-web-identity"
 }
 
 resource "aws_iam_policy" "athena_policy" {
@@ -47,6 +47,6 @@ resource "aws_iam_policy" "athena_policy" {
 # Attach policy on the GitHub Actions Role
 resource "aws_iam_policy_attachment" "athena_attachment" {
   name       = "athena-attachment"
-  roles      = [data.aws_iam_role.athena_policy.name]
+  roles      = [data.aws_iam_role.github_actions_web_identity.name]
   policy_arn = aws_iam_policy.athena_policy.arn
 }
