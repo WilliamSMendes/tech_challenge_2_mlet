@@ -13,10 +13,6 @@ resource "aws_athena_workgroup" "etl" {
 }
 
 # Athena Policy (Permissions)
-data "aws_iam_role" "github_actions_web_identity" {
-  name = "github-actions-web-identity"
-}
-
 resource "aws_iam_policy" "athena_policy" {
   name = "AthenaPolicy"
   tags = local.default_tags
@@ -30,23 +26,19 @@ resource "aws_iam_policy" "athena_policy" {
         ]
         Effect   = "Allow"
         Resource = "*"
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "logs:CreateLogGroup",
-          "logs:CreateLogStream",
-          "logs:PutLogEvents"
-        ]
-        Resource = "*"
       }
     ]
   })
 }
 
+# Role used to manage Athena resources (GitHub Actions OIDC role)
+data "aws_iam_role" "athena_execution_role" {
+  name = "github-actions-web-identity"
+}
+
 # Attach policy on the GitHub Actions Role
 resource "aws_iam_policy_attachment" "athena_attachment" {
   name       = "athena-attachment"
-  roles      = [data.aws_iam_role.github_actions_web_identity.name]
+  roles      = [data.aws_iam_role.athena_execution_role.name]
   policy_arn = aws_iam_policy.athena_policy.arn
 }
