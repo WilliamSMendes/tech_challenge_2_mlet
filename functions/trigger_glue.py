@@ -9,11 +9,18 @@ glue = boto3.client('glue')
 
 
 def _has_active_run(glue_job_name: str) -> bool:
-    response = glue.get_job_runs(JobName=glue_job_name, MaxResults=10)
-    for job_run in response.get('JobRuns', []):
-        if job_run.get('JobRunState') in {'STARTING', 'RUNNING', 'STOPPING'}:
-            return True
-    return False
+    try:
+        response = glue.get_job_runs(JobName=glue_job_name, MaxResults=10)
+        for job_run in response.get('JobRuns', []):
+            if job_run.get('JobRunState') in {'STARTING', 'RUNNING', 'STOPPING'}:
+                return True
+        return False
+    except ClientError as e:
+        code = e.response.get('Error', {}).get('Code')
+        if code in {'AccessDeniedException', 'AccessDenied'}:
+            print(f"Sem permissão para glue:GetJobRuns em '{glue_job_name}'. Continuando sem checagem prévia.")
+            return False
+        raise
 
 def lambda_handler(event, context):
     glue_job_name = os.environ.get('GLUE_JOB_NAME', 'transform_job')
