@@ -62,6 +62,15 @@ jobs:
       - name: Terraform Validate
         run: terraform validate
 
+      - name: Terraform Apply (bootstrap IAM)
+        run: |
+          terraform apply -auto-approve \
+            -target=aws_iam_policy.github_actions_deploy_policy \
+            -target=aws_iam_policy_attachment.github_actions_deploy_attachment
+
+      - name: Wait for IAM propagation
+        run: sleep 30
+
       - name: Terraform Plan
         run: terraform plan -out "tfplan"
 
