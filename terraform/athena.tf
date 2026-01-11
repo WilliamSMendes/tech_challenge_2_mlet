@@ -61,6 +61,8 @@ resource "aws_iam_policy" "github_actions_deploy_policy" {
           "lambda:DeleteFunction",
           "lambda:GetFunction",
           "lambda:GetFunctionConfiguration",
+          "lambda:GetLayerVersion",
+          "lambda:ListVersionsByFunction",
           "lambda:ListFunctions",
           "lambda:AddPermission",
           "lambda:RemovePermission",
@@ -76,9 +78,15 @@ resource "aws_iam_policy" "github_actions_deploy_policy" {
         Resource = "*"
       },
       {
-        Sid    = "EventBridgeTagging"
+        Sid    = "EventBridgeManagement"
         Effect = "Allow"
         Action = [
+          "events:PutRule",
+          "events:DeleteRule",
+          "events:DescribeRule",
+          "events:PutTargets",
+          "events:RemoveTargets",
+          "events:ListTargetsByRule",
           "events:TagResource",
           "events:UntagResource"
         ]
