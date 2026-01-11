@@ -36,9 +36,25 @@ def lambda_handler(event, context):
         
         try:
             df = yf.download(tickers=tickers, start=start_date, end=end_date, group_by='ticker', progress=False)
+            if df is None or df.empty:
+                print("Nenhum dado retornado pelo yfinance; nada para salvar na RAW.")
+                return {
+                    'statusCode': 204,
+                    'body': json.dumps('Nenhum dado retornado; extração ignorada.')
+                }
             
             # Usa stack e reseta o multiindex para ter virar dados tabulares
             df_stack = df.stack(level=0).reset_index().rename(columns={'level_1': 'Ticker'})
+
+            if df_stack.empty:
+                print("DataFrame após stack está vazio; nada para salvar na RAW.")
+                return {
+                    'statusCode': 204,
+                    'body': json.dumps('DataFrame vazio; extração ignorada.')
+                }
+
+            # Ajuda a manter schema estável (evita Ticker virar dtype null em casos extremos)
+            df_stack['Ticker'] = df_stack['Ticker'].astype('string')
             
             # Salva localmente na lambda
             df_stack.to_parquet(file_path)
