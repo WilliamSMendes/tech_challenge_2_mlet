@@ -6,11 +6,21 @@ import polars.selectors as cs
 from awsglue.utils import getResolvedOptions
 
 # Le argumentos passados pelo Job
-args = getResolvedOptions(sys.argv, ['JOB_NAME', 'BUCKET_NAME', 'INPUT_KEY'])
-bucket_name = args['BUCKET_NAME']
-input_key = args['INPUT_KEY']
+bucket_name = None
+input_prefix = None
 
-input_path = f"s3://{bucket_name}/{input_key}"
+try:
+    args = getResolvedOptions(sys.argv, ['JOB_NAME', 'BUCKET_NAME', 'INPUT_PREFIX'])
+    bucket_name = args['BUCKET_NAME']
+    input_prefix = args['INPUT_PREFIX']
+except Exception:
+    # Compatibilidade: versões antigas passavam INPUT_KEY
+    args = getResolvedOptions(sys.argv, ['JOB_NAME', 'BUCKET_NAME', 'INPUT_KEY'])
+    bucket_name = args['BUCKET_NAME']
+    input_key = args['INPUT_KEY']
+    input_prefix = input_key.rsplit('/', 1)[0] + '/'
+
+input_path = f"s3://{bucket_name}/{input_prefix}"
 print(f"Lendo dados de: {input_path}")
 
 # Le o arquivo RAW com Polars
@@ -53,7 +63,7 @@ output_path_refined = f"s3://{bucket_name}/refined/"
 df_final.write_parquet(
     output_path_refined,
     use_pyarrow=True,
-    partition_by=["data_pregao"]
+    partition_by=["data_pregao", "nome_acao"]
 )
 
 print("Dados refinados salvos com sucesso.")

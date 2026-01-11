@@ -77,3 +77,24 @@ resource "aws_s3_object" "transform_code" {
   etag   = filemd5("../src/transform.py")
   tags   = local.default_tags
 }
+
+# Crawler para catalogar automaticamente os dados refinados no Glue Catalog
+resource "aws_glue_crawler" "refined_crawler" {
+  name          = "refined_crawler"
+  role          = aws_iam_role.glue_job_role.arn
+  database_name = "default"
+
+  # Roda diariamente após o agendamento principal (19:00 BRT = 22:00 UTC)
+  schedule = "cron(0 23 * * ? *)"
+
+  s3_target {
+    path = "s3://${aws_s3_bucket.data_lake_bucket.bucket}/refined/"
+  }
+
+  schema_change_policy {
+    update_behavior = "UPDATE_IN_DATABASE"
+    delete_behavior = "LOG"
+  }
+
+  tags = local.default_tags
+}
