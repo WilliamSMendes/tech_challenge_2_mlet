@@ -1,25 +1,30 @@
+# functions/trigger_glue.py
 import boto3
-import json
+import urllib.parse
 
 glue = boto3.client('glue')
 
 def lambda_handler(event, context):
-    print("Evento recebido:", json.dumps(event))
-    glue_job_name = 'transform_job' 
+    glue_job_name = 'transform_job'
     
-    # Verifica se o evento veio do EventBridge (Scheduled)
-    if 'source' in event and event['source'] == 'aws.events':
-        print("Acionado via Agendamento (EventBridge).")
-    else:
-        # Lógica antiga para S3 (caso mantenha o upload manual como opção)
-        print("Acionado via Upload S3 ou outro método.")
-
+    # Pega o bucket e a key do evento S3
+    bucket = event['Records'][0]['s3']['bucket']['name']
+    key = urllib.parse.unquote_plus(event['Records'][0]['s3']['object']['key'], encoding='utf-8')
+    
+    print(f"Arquivo detectado: s3://{bucket}/{key}")
+    
     try:
-        # Inicia o Job sem argumentos específicos, o Job calcula D-1 internamente
-        response = glue.start_job_run(JobName=glue_job_name)
-        print(f"Glue Job {glue_job_name} iniciado. JobRunId: {response['JobRunId']}")
-        return {'statusCode': 200, 'body': 'Job disparado.'}
+        # Passa o nome do bucket e o caminho do arquivo como argumentos para o Glue
+        arguments = {
+            '--BUCKET_NAME': bucket,
+            '--INPUT_KEY': key,
+            '--additional-python-modules': 'polars,yfinance'
+        }
+        
+        response = glue.start_job_run(JobName=glue_job_name, Arguments=arguments)
+        print(f"Glue Job iniciado: {response['JobRunId']}")
+        return {'statusCode': 200, 'body': 'Job iniciado.'}
         
     except Exception as e:
-        print(f"Erro: {str(e)}")
+        print(e)
         raise e

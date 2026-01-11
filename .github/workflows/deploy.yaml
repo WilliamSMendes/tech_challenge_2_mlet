@@ -4,40 +4,66 @@ on:
   push:
     branches: ["main"]
 
+# Garante que apenas um deploy rode por vez na main
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false
+
 permissions:
   id-token: write
   contents: read
 
 jobs:
-  prepare:
+  deploy:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./terraform
+    
     steps:
-      - name: Checkout
+      - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Echo
-        run: echo "Preparing for deployment..."
+      - name: Setup Python (para dependências da Lambda)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
 
-      - name: aws-credentials
+      # Instala dependências para a Lambda de Extração
+      - name: Install Lambda Dependencies
+        run: |
+          cd ../functions
+          mkdir -p package
+
+          pip install yfinance -t ./package
+
+          cp extract.py ./package/
+
+          cd package
+          rm -rf pandas numpy pyarrow
+          cd ..
+        working-directory: ./terraform
+
+      - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::818392673747:role/github-actions-web-identity
           aws-region: us-east-1
-          
+
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
       - name: Terraform Init
-        run: |
-          cd terraform
-          terraform init
+        run: terraform init
 
-      - name: Terraform plan
-        run: |
-          cd terraform
-          terraform plan -out "tfplan"
+      - name: Terraform Format Check
+        run: terraform fmt -check
 
-      - name: Terraform apply
-        run: |
-          cd terraform
-          terraform apply "tfplan"
+      - name: Terraform Validate
+        run: terraform validate
+
+      - name: Terraform Plan
+        run: terraform plan -out "tfplan"
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve "tfplan"
