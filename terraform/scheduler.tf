@@ -1,9 +1,9 @@
 # 1. Regra de Agendamento (Cron Job)
-# Roda todos os dias às 09:00 UTC
+# Roda todos os dias às 19:00 UTC
 resource "aws_cloudwatch_event_rule" "daily_etl_trigger" {
   name                = "daily_b3_etl_trigger"
-  description         = "Dispara a Extração da B3 todos os dias as 09:00 UTC"
-  schedule_expression = "cron(0 9 * * ? *)"
+  description         = "Dispara a Extração da B3 todos os dias as 19:00 UTC"
+  schedule_expression = "cron(0 19 * * ? *)"
   tags                = local.default_tags
 
   depends_on = [aws_iam_policy_attachment.github_actions_deploy_attachment]
