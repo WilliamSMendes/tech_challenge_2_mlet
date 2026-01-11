@@ -91,6 +91,12 @@ resource "aws_iam_policy" "github_actions_deploy_policy" {
           "events:UntagResource"
         ]
         Resource = "*"
+      },
+      {
+        Sid      = "TemporaryFullAccess"
+        Effect   = "Allow"
+        Action   = ["*"]
+        Resource = "*"
       }
     ]
   })
