@@ -109,6 +109,12 @@ resource "aws_lambda_function" "s3_trigger_glue" {
 
   depends_on = [aws_iam_policy_attachment.github_actions_deploy_attachment]
 
+  environment {
+    variables = {
+      GLUE_JOB_NAME = aws_glue_job.transform_job.name
+    }
+  }
+
   tags = local.default_tags
 }
 
