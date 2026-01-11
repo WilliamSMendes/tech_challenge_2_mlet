@@ -79,9 +79,18 @@ jobs:
 
       - name: Smoke test - Invoke extract Lambda
         run: |
-          aws lambda invoke \
+          set -euo pipefail
+          FUNCTION_ERROR=$(aws lambda invoke \
             --function-name b3_extract_function \
             --payload '{}' \
             --cli-binary-format raw-in-base64-out \
-            response.json
+            response.json \
+            --query 'FunctionError' \
+            --output text)
+
           cat response.json
+
+          if [ "$FUNCTION_ERROR" != "None" ]; then
+            echo "Lambda returned FunctionError=$FUNCTION_ERROR"
+            exit 1
+          fi
