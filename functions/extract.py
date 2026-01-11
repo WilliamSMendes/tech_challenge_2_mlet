@@ -26,10 +26,25 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 from datetime import datetime, timedelta
+from urllib.request import Request, urlopen
+from urllib.error import URLError, HTTPError
 from dateutil.relativedelta import relativedelta
 import tempfile
 
 s3_client = boto3.client('s3')
+
+
+def _check_outbound_https(url: str, timeout_seconds: float = 3.0) -> tuple[bool, str]:
+    try:
+        req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urlopen(req, timeout=timeout_seconds) as resp:
+            return True, f"HTTP {resp.status}"
+    except HTTPError as e:
+        return False, f"HTTPError {e.code}: {e.reason}"
+    except URLError as e:
+        return False, f"URLError: {getattr(e, 'reason', str(e))}"
+    except Exception as e:
+        return False, f"Exception: {type(e).__name__}: {e}"
 
 def lambda_handler(event, context):
     print("Iniciando Extração...")
@@ -43,6 +58,25 @@ def lambda_handler(event, context):
     
     tickers = ['TOTS3.SA', 'LWSA3.SA', 'POSI3.SA', 'INTB3.SA', 'WEGE3.SA']
     bucket_name = os.environ['BUCKET_NAME']
+
+    print(f"Período: start_date={start_date} end_date={end_date} (D-1)")
+    print(f"Tickers: {tickers}")
+    print(f"Bucket RAW: {bucket_name}")
+
+    # Diagnóstico: yfinance precisa de saída HTTPS para Yahoo Finance.
+    # Em Lambda dentro de VPC privada sem NAT Gateway (ou sem rota/DNS), o download costuma voltar vazio.
+    ok, detail = _check_outbound_https(
+        "https://query1.finance.yahoo.com/v7/finance/quote?symbols=WEGE3.SA",
+        timeout_seconds=3.0,
+    )
+    print(f"Outbound HTTPS check (Yahoo): ok={ok} detail={detail}")
+    if not ok:
+        return {
+            'statusCode': 503,
+            'body': json.dumps(
+                'Sem acesso HTTPS ao Yahoo Finance (provável Lambda em VPC sem NAT/rota/DNS).'
+            )
+        }
     
     # Cria diretório temporário para salvar o arquivo antes do upload
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -52,6 +86,10 @@ def lambda_handler(event, context):
             df = yf.download(tickers=tickers, start=start_date, end=end_date, group_by='ticker', progress=False)
             if df is None or df.empty:
                 print("Nenhum dado retornado pelo yfinance; nada para salvar na RAW.")
+                try:
+                    print(f"yfinance df type={type(df).__name__} shape={getattr(df, 'shape', None)}")
+                except Exception:
+                    pass
                 return {
                     'statusCode': 204,
                     'body': json.dumps('Nenhum dado retornado; extração ignorada.')
