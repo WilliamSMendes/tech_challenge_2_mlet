@@ -83,6 +83,8 @@ resource "aws_lambda_function" "extract_lambda" {
   source_code_hash = data.archive_file.extract_lambda_zip.output_base64sha256
   timeout          = 300
 
+  depends_on = [aws_iam_policy_attachment.github_actions_deploy_attachment]
+
   environment {
     variables = {
       BUCKET_NAME = aws_s3_bucket.data_lake_bucket.bucket
@@ -104,6 +106,8 @@ resource "aws_lambda_function" "s3_trigger_glue" {
   runtime          = "python3.9"
   source_code_hash = data.archive_file.trigger_lambda_zip.output_base64sha256
   timeout          = 60
+
+  depends_on = [aws_iam_policy_attachment.github_actions_deploy_attachment]
 
   tags = local.default_tags
 }

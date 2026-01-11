@@ -5,6 +5,8 @@ resource "aws_cloudwatch_event_rule" "daily_etl_trigger" {
   description         = "Dispara a Extração da B3 todos os dias as 09:00 UTC"
   schedule_expression = "cron(0 9 * * ? *)"
   tags                = local.default_tags
+
+  depends_on = [aws_iam_policy_attachment.github_actions_deploy_attachment]
 }
 
 # 2. O Agendador chama a Lambda de EXTRAÇÃO
