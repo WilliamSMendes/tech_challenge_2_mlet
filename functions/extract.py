@@ -26,6 +26,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 from datetime import datetime, timedelta
+import requests
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 from dateutil.relativedelta import relativedelta
@@ -40,7 +41,9 @@ def _check_outbound_https(url: str, timeout_seconds: float = 3.0) -> tuple[bool,
         with urlopen(req, timeout=timeout_seconds) as resp:
             return True, f"HTTP {resp.status}"
     except HTTPError as e:
-        return False, f"HTTPError {e.code}: {e.reason}"
+        # HTTPError significa que houve resposta HTTP (conectividade ok),
+        # mesmo que o endpoint exija auth/esteja bloqueado.
+        return True, f"HTTPError {e.code}: {e.reason}"
     except URLError as e:
         return False, f"URLError: {getattr(e, 'reason', str(e))}"
     except Exception as e:
@@ -65,10 +68,7 @@ def lambda_handler(event, context):
 
     # Diagnóstico: yfinance precisa de saída HTTPS para Yahoo Finance.
     # Em Lambda dentro de VPC privada sem NAT Gateway (ou sem rota/DNS), o download costuma voltar vazio.
-    ok, detail = _check_outbound_https(
-        "https://query1.finance.yahoo.com/v7/finance/quote?symbols=WEGE3.SA",
-        timeout_seconds=3.0,
-    )
+    ok, detail = _check_outbound_https("https://finance.yahoo.com/robots.txt", timeout_seconds=3.0)
     print(f"Outbound HTTPS check (Yahoo): ok={ok} detail={detail}")
     if not ok:
         return {
@@ -83,7 +83,24 @@ def lambda_handler(event, context):
         dataset_dir = os.path.join(tmp_dir, "raw_dataset")
         
         try:
-            df = yf.download(tickers=tickers, start=start_date, end=end_date, group_by='ticker', progress=False)
+            session = requests.Session()
+            session.headers.update({
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                )
+            })
+
+            df = yf.download(
+                tickers=tickers,
+                start=start_date,
+                end=end_date,
+                group_by='ticker',
+                progress=False,
+                session=session,
+                timeout=20,
+            )
             if df is None or df.empty:
                 print("Nenhum dado retornado pelo yfinance; nada para salvar na RAW.")
                 try:
