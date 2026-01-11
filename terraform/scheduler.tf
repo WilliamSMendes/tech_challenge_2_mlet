@@ -3,7 +3,7 @@
 resource "aws_cloudwatch_event_rule" "daily_etl_trigger" {
   name                = "daily_b3_etl_trigger"
   description         = "Dispara a Extração da B3 todos os dias as 09:00 UTC"
-  schedule_expression = "cron(0 9 * * ? *)" 
+  schedule_expression = "cron(0 9 * * ? *)"
   tags                = local.default_tags
 }
 

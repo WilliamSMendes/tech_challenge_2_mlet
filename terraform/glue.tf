@@ -25,7 +25,7 @@ resource "aws_glue_job" "transform_job" {
     max_concurrent_runs = 1
   }
 
-  tags = local.default_tags 
+  tags = local.default_tags
 }
 
 resource "aws_iam_role" "glue_job_role" {
@@ -35,42 +35,42 @@ resource "aws_iam_role" "glue_job_role" {
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Action = "sts:AssumeRole"
-      Effect = "Allow"
+      Action    = "sts:AssumeRole"
+      Effect    = "Allow"
       Principal = { Service = "glue.amazonaws.com" }
     }]
   })
 }
 
 resource "aws_iam_policy" "glue_policy" {
-    name = "GluePolicy"
-    tags = local.default_tags
-    policy = jsonencode({
+  name = "GluePolicy"
+  tags = local.default_tags
+  policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Action = ["s3:*"]
-        Effect = "Allow"
+        Action   = ["s3:*"]
+        Effect   = "Allow"
         Resource = "*"
       },
       {
-        Action = ["glue:*", "cloudwatch:*", "logs:*"]
-        Effect = "Allow"
+        Action   = ["glue:*", "cloudwatch:*", "logs:*"]
+        Effect   = "Allow"
         Resource = "*"
       }
     ]
-  })  
+  })
 }
 
 resource "aws_iam_policy_attachment" "glue_attachment" {
-  name       = "glue-attachment"  
-  roles      = [aws_iam_role.glue_job_role.name]  
+  name       = "glue-attachment"
+  roles      = [aws_iam_role.glue_job_role.name]
   policy_arn = aws_iam_policy.glue_policy.arn
 }
 
 resource "aws_s3_object" "transform_code" {
   depends_on = [aws_s3_bucket.source_code_bucket]
-    
+
   bucket = aws_s3_bucket.source_code_bucket.id
   key    = "transform.py"
   source = "../src/transform.py"
