@@ -4,6 +4,17 @@ import boto3
 import os
 from pathlib import Path
 
+# Algumas dependências do yfinance usam SQLite e podem falhar no runtime do Lambda
+# por causa da versão do sqlite embutida (ex.: erro perto de "WITHOUT").
+# Se pysqlite3-binary estiver no pacote, usamos ele como sqlite3.
+try:
+    import pysqlite3  # type: ignore
+    import sys
+
+    sys.modules["sqlite3"] = pysqlite3
+except Exception:
+    pass
+
 # Em AWS Lambda, não é garantido existir um HOME padrão com ~/.cache.
 # O yfinance usa cache em ~/.cache/py-yfinance; então apontamos para /tmp e criamos o diretório.
 os.environ.setdefault("HOME", "/tmp")
