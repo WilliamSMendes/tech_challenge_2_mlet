@@ -2,6 +2,14 @@
 import json
 import boto3
 import os
+from pathlib import Path
+
+# Em AWS Lambda, não é garantido existir um HOME padrão com ~/.cache.
+# O yfinance usa cache em ~/.cache/py-yfinance; então apontamos para /tmp e criamos o diretório.
+os.environ.setdefault("HOME", "/tmp")
+os.environ.setdefault("XDG_CACHE_HOME", os.path.join(os.environ["HOME"], ".cache"))
+Path(os.path.join(os.environ["XDG_CACHE_HOME"], "py-yfinance")).mkdir(parents=True, exist_ok=True)
+
 import yfinance as yf
 from datetime import datetime, timedelta
 from dateutil.relativedelta import relativedelta
