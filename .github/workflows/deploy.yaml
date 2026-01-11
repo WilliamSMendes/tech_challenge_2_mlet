@@ -69,10 +69,19 @@ jobs:
             -target=aws_iam_policy_attachment.github_actions_deploy_attachment
 
       - name: Wait for IAM propagation
-        run: sleep 30
+        run: sleep 20
 
       - name: Terraform Plan
         run: terraform plan -out "tfplan"
 
       - name: Terraform Apply
         run: terraform apply -auto-approve "tfplan"
+
+      - name: Smoke test - Invoke extract Lambda
+        run: |
+          aws lambda invoke \
+            --function-name b3_extract_function \
+            --payload '{}' \
+            --cli-binary-format raw-in-base64-out \
+            response.json
+          cat response.json
