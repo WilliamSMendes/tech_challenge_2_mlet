@@ -16,8 +16,11 @@ print(f"Lendo dados de: {input_path}")
 # Le o arquivo RAW com Polars
 df_raw = pl.read_parquet(input_path)
 
-# Ordena os dados por Ticker e Date para garantir consistência nos cálculos
-df_clean = df_raw.sort(["Ticker", "Date"])
+# Normaliza schema mínimo (em arquivos vazios o Parquet pode materializar "Ticker" como Null)
+df_clean = df_raw.with_columns(
+    pl.col("Ticker").cast(pl.Utf8, strict=False),
+    pl.col("Date").cast(pl.Datetime, strict=False),
+).sort(["Ticker", "Date"])
 
 # Feature Engineering
 df_refined = df_clean.with_columns([
