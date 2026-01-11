@@ -42,3 +42,54 @@ resource "aws_iam_policy_attachment" "athena_attachment" {
   roles      = [data.aws_iam_role.athena_execution_role.name]
   policy_arn = aws_iam_policy.athena_policy.arn
 }
+
+# GitHub Actions Role Permissions (Terraform deploy)
+resource "aws_iam_policy" "github_actions_deploy_policy" {
+  name = "GitHubActionsTerraformDeployPolicy"
+  tags = local.default_tags
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "LambdaManagement"
+        Effect = "Allow"
+        Action = [
+          "lambda:CreateFunction",
+          "lambda:UpdateFunctionCode",
+          "lambda:UpdateFunctionConfiguration",
+          "lambda:DeleteFunction",
+          "lambda:GetFunction",
+          "lambda:GetFunctionConfiguration",
+          "lambda:ListFunctions",
+          "lambda:AddPermission",
+          "lambda:RemovePermission",
+          "lambda:TagResource",
+          "lambda:UntagResource"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid      = "PassRoleForLambda"
+        Effect   = "Allow"
+        Action   = ["iam:PassRole"]
+        Resource = "*"
+      },
+      {
+        Sid    = "EventBridgeTagging"
+        Effect = "Allow"
+        Action = [
+          "events:TagResource",
+          "events:UntagResource"
+        ]
+        Resource = "*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_policy_attachment" "github_actions_deploy_attachment" {
+  name       = "github-actions-deploy-attachment"
+  roles      = [data.aws_iam_role.athena_execution_role.name]
+  policy_arn = aws_iam_policy.github_actions_deploy_policy.arn
+}
