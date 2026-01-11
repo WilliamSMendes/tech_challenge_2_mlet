@@ -4,3 +4,6 @@ pandas>=2.0.0
 yfinance>=0.2.30
 jupyter>=1.0.0
 ipykernel>=6.29.0
+matplotlib>=3.10.8
+seaborn>=0.13.2
+boto3>=1.42.25

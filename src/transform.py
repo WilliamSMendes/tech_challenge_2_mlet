@@ -1,38 +1,38 @@
-import logging
+import sys
+from awsglue.transforms import *
+from awsglue.utils import getResolvedOptions
+from pyspark.context import SparkContext
+from awsglue.context import GlueContext
+from awsglue.job import Job
+from pyspark.sql.functions import col, avg, to_date
 
-import polars as pl
-import yfinance as yf
+args = getResolvedOptions(sys.argv, ['JOB_NAME'])
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init(args['JOB_NAME'], args)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+# Ler do S3 (Raw)
+# Assumindo que o extract.py salvou em parquet
+dyf = glueContext.create_dynamic_frame.from_options(
+    format_options={},
+    connection_type="s3",
+    format="parquet",
+    connection_options={"paths": ["s3://SEU_BUCKET_DATALAKE/raw/"], "recurse": True},
+    transformation_ctx="dyf"
 )
-logger = logging.getLogger(__name__)
 
-def main():
-    cod = "B3SA3.SA"
-    period = "1d"
+# Converter para DataFrame Spark (similar ao Polars/Pandas)
+df = dyf.toDF()
 
-    logger.info(f"Fetching {cod} data for period: {period}")
-    stock = yf.Ticker(cod)
-    data = stock.history(period=period)
+# Aplica as transformações do Requisito 5 aqui usando PySpark
+# Ex: Rename
+df = df.withColumnRenamed("Close", "fechamento") \
+       .withColumnRenamed("Volume", "volume_negociado")
 
-    df = pl.from_pandas(data.reset_index())
-    df = df.drop([c for c in ["Dividends", "Stock Splits"] if c in df.columns])
-    df = df.rename(
-        {
-            "Open": "open",
-            "High": "high",
-            "Low": "low",
-            "Close": "close",
-            "Volume": "volume",
-            "Dividends": "dividends",
-            "Stock Splits": "stock_splits",
-            "Date": "date",
-        }
-    )
+# Ex: Salvar na Refined particionado (Requisito 6)
+save_path = "s3://SEU_BUCKET_DATALAKE/refined/"
+df.write.mode("overwrite").partitionBy("data_pregao", "Ticker").parquet(save_path)
 
-    print(df)
-
-if __name__ == "__main__":
-    main()
+job.commit()
