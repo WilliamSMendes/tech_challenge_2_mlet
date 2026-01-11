@@ -35,7 +35,7 @@ jobs:
           cd ../functions
           mkdir -p package
 
-          pip install yfinance -t ./package
+          pip install yfinance==0.2.30 -t ./package
 
           cp extract.py ./package/
 
