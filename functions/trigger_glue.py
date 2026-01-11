@@ -3,8 +3,17 @@ import boto3
 import json
 import os
 import urllib.parse
+from botocore.exceptions import ClientError
 
 glue = boto3.client('glue')
+
+
+def _has_active_run(glue_job_name: str) -> bool:
+    response = glue.get_job_runs(JobName=glue_job_name, MaxResults=10)
+    for job_run in response.get('JobRuns', []):
+        if job_run.get('JobRunState') in {'STARTING', 'RUNNING', 'STOPPING'}:
+            return True
+    return False
 
 def lambda_handler(event, context):
     glue_job_name = os.environ.get('GLUE_JOB_NAME', 'transform_job')
@@ -30,6 +39,10 @@ def lambda_handler(event, context):
     print(f"Arquivo detectado: s3://{bucket}/{key}")
     
     try:
+        if _has_active_run(glue_job_name):
+            print(f"Glue Job '{glue_job_name}' já está em execução. Ignorando novo disparo.")
+            return {'statusCode': 202, 'body': 'Job já em execução; trigger ignorado.'}
+
         # Passa o nome do bucket e o caminho do arquivo como argumentos para o Glue
         arguments = {
             '--BUCKET_NAME': bucket,
@@ -41,6 +54,14 @@ def lambda_handler(event, context):
         print(f"Glue Job iniciado: {response['JobRunId']}")
         return {'statusCode': 200, 'body': 'Job iniciado.'}
         
+    except ClientError as e:
+        code = e.response.get('Error', {}).get('Code')
+        if code == 'ConcurrentRunsExceededException':
+            print(f"Concurrent runs exceeded para '{glue_job_name}'. Considerando OK (já existe execução em andamento).")
+            return {'statusCode': 202, 'body': 'Job já em execução; concorrência excedida.'}
+
+        print(e)
+        raise
     except Exception as e:
         print(e)
-        raise e
+        raise
