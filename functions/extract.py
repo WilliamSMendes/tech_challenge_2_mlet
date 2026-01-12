@@ -31,6 +31,8 @@ from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 from dateutil.relativedelta import relativedelta
 import tempfile
+import time
+from typing import Optional
 
 s3_client = boto3.client('s3')
 
@@ -48,6 +50,98 @@ def _check_outbound_https(url: str, timeout_seconds: float = 3.0) -> tuple[bool,
         return False, f"URLError: {getattr(e, 'reason', str(e))}"
     except Exception as e:
         return False, f"Exception: {type(e).__name__}: {e}"
+
+
+def _make_yahoo_session() -> requests.Session:
+    session = requests.Session()
+    session.headers.update(
+        {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Accept": "application/json,text/plain,*/*",
+            "Accept-Language": "en-US,en;q=0.9,pt-BR;q=0.8,pt;q=0.7",
+            "Connection": "close",
+        }
+    )
+    return session
+
+
+def _download_yfinance_with_fallback(
+    tickers: list[str],
+    start_date: str,
+    end_date: str,
+    max_attempts: int = 3,
+    sleep_seconds: float = 1.5,
+) -> pd.DataFrame:
+    # Observação: em ambientes AWS, o Yahoo pode bloquear/servir respostas vazias/HTML.
+    # Isso pode causar erros como "Expecting value: line 1 column 1" dentro do yfinance.
+    # Estratégia:
+    # 1) tentar multi-ticker com threads=False (menos agressivo)
+    # 2) se vazio, baixar 1 ticker por vez e concatenar
+    session = _make_yahoo_session()
+
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            df = yf.download(
+                tickers=tickers,
+                start=start_date,
+                end=end_date,
+                group_by='ticker',
+                progress=False,
+                session=session,
+                timeout=20,
+                threads=False,
+            )
+            if df is not None and not df.empty:
+                return df
+            print(f"yfinance multi-ticker retornou vazio (attempt={attempt}/{max_attempts}).")
+        except Exception as e:
+            last_exc = e
+            print(f"yfinance multi-ticker falhou (attempt={attempt}/{max_attempts}): {type(e).__name__}: {e}")
+        time.sleep(sleep_seconds)
+
+    print("Tentando fallback: download por ticker (sequencial).")
+    frames: list[pd.DataFrame] = []
+    for ticker in tickers:
+        last_ticker_exc: Optional[Exception] = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                df_one = yf.download(
+                    tickers=ticker,
+                    start=start_date,
+                    end=end_date,
+                    progress=False,
+                    session=session,
+                    timeout=20,
+                    threads=False,
+                )
+                if df_one is None or df_one.empty:
+                    print(f"Ticker {ticker}: retorno vazio (attempt={attempt}/{max_attempts}).")
+                else:
+                    # Converte colunas para MultiIndex no formato esperado pelo fluxo atual.
+                    df_one.columns = pd.MultiIndex.from_product([[ticker], df_one.columns])
+                    frames.append(df_one)
+                    break
+            except Exception as e:
+                last_ticker_exc = e
+                print(
+                    f"Ticker {ticker}: falha (attempt={attempt}/{max_attempts}): {type(e).__name__}: {e}"
+                )
+            time.sleep(sleep_seconds)
+
+        if last_ticker_exc is not None:
+            print(f"Ticker {ticker}: última falha: {type(last_ticker_exc).__name__}: {last_ticker_exc}")
+
+    if not frames:
+        if last_exc is not None:
+            raise last_exc
+        return pd.DataFrame()
+
+    return pd.concat(frames, axis=1).sort_index()
 
 def lambda_handler(event, context):
     print("Iniciando Extração...")
@@ -83,23 +177,12 @@ def lambda_handler(event, context):
         dataset_dir = os.path.join(tmp_dir, "raw_dataset")
         
         try:
-            session = requests.Session()
-            session.headers.update({
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                )
-            })
-
-            df = yf.download(
+            df = _download_yfinance_with_fallback(
                 tickers=tickers,
-                start=start_date,
-                end=end_date,
-                group_by='ticker',
-                progress=False,
-                session=session,
-                timeout=20,
+                start_date=start_date,
+                end_date=end_date,
+                max_attempts=3,
+                sleep_seconds=1.5,
             )
             if df is None or df.empty:
                 print("Nenhum dado retornado pelo yfinance; nada para salvar na RAW.")
