@@ -69,79 +69,117 @@ def _make_yahoo_session() -> requests.Session:
     return session
 
 
-def _download_yfinance_with_fallback(
+def _yf_download_compat(
+    *,
+    tickers,
+    start: str,
+    end: str,
+    group_by: Optional[str] = None,
+    progress: bool = False,
+    timeout: int = 20,
+    threads: bool = False,
+    session: Optional[requests.Session] = None,
+) -> pd.DataFrame:
+    """Wrapper para lidar com diferenças de versão do yfinance.
+
+    - Em yfinance 0.2.x, passar requests.Session costuma funcionar.
+    - Em yfinance 1.x, o parâmetro session (e o tipo de session) pode ser restrito.
+
+    Estratégia: tentar com session (se fornecida) e, em caso de erro típico,
+    reexecutar sem session.
+    """
+    kwargs = {
+        "tickers": tickers,
+        "start": start,
+        "end": end,
+        "progress": progress,
+        "timeout": timeout,
+        "threads": threads,
+    }
+    if group_by is not None:
+        kwargs["group_by"] = group_by
+
+    if session is not None:
+        try:
+            return yf.download(session=session, **kwargs)
+        except TypeError as e:
+            # Ex.: parâmetro não suportado nessa versão.
+            print(f"yfinance: session não suportada; tentando sem session. {type(e).__name__}: {e}")
+        except Exception as e:
+            msg = str(e)
+            if "requires curl_cffi session" in msg or "Solution: stop setting session" in msg:
+                print(f"yfinance: session incompatível; tentando sem session. {type(e).__name__}: {e}")
+            else:
+                raise
+
+    return yf.download(**kwargs)
+
+
+def _download_yfinance_partial(
     tickers: list[str],
     start_date: str,
     end_date: str,
     max_attempts: int = 3,
-    sleep_seconds: float = 1.5,
-) -> pd.DataFrame:
-    # Observação: em ambientes AWS, o Yahoo pode bloquear/servir respostas vazias/HTML.
-    # Isso pode causar erros como "Expecting value: line 1 column 1" dentro do yfinance.
-    # Estratégia:
-    # 1) tentar multi-ticker com threads=False (menos agressivo)
-    # 2) se vazio, baixar 1 ticker por vez e concatenar
+    base_sleep_seconds: float = 1.5,
+) -> tuple[pd.DataFrame, list[str], dict[str, str]]:
+    """Baixa 1 ticker por vez e retorna o que conseguir.
+
+    Retorna:
+    - df combinado em colunas MultiIndex (Ticker, Campo)
+    - lista de tickers bem-sucedidos
+    - dict ticker->erro para os que falharam
+    """
     session = _make_yahoo_session()
-
-    last_exc: Optional[Exception] = None
-    for attempt in range(1, max_attempts + 1):
-        try:
-            df = yf.download(
-                tickers=tickers,
-                start=start_date,
-                end=end_date,
-                group_by='ticker',
-                progress=False,
-                session=session,
-                timeout=20,
-                threads=False,
-            )
-            if df is not None and not df.empty:
-                return df
-            print(f"yfinance multi-ticker retornou vazio (attempt={attempt}/{max_attempts}).")
-        except Exception as e:
-            last_exc = e
-            print(f"yfinance multi-ticker falhou (attempt={attempt}/{max_attempts}): {type(e).__name__}: {e}")
-        time.sleep(sleep_seconds)
-
-    print("Tentando fallback: download por ticker (sequencial).")
+    successes: list[str] = []
+    failures: dict[str, str] = {}
     frames: list[pd.DataFrame] = []
+
     for ticker in tickers:
-        last_ticker_exc: Optional[Exception] = None
+        df_one: Optional[pd.DataFrame] = None
+        last_error: Optional[Exception] = None
+
         for attempt in range(1, max_attempts + 1):
             try:
-                df_one = yf.download(
+                df_one = _yf_download_compat(
                     tickers=ticker,
                     start=start_date,
                     end=end_date,
                     progress=False,
-                    session=session,
                     timeout=20,
                     threads=False,
+                    session=session,
                 )
-                if df_one is None or df_one.empty:
-                    print(f"Ticker {ticker}: retorno vazio (attempt={attempt}/{max_attempts}).")
-                else:
-                    # Converte colunas para MultiIndex no formato esperado pelo fluxo atual.
+
+                if df_one is not None and not df_one.empty:
                     df_one.columns = pd.MultiIndex.from_product([[ticker], df_one.columns])
                     frames.append(df_one)
+                    successes.append(ticker)
+                    print(f"Ticker {ticker}: OK shape={df_one.shape}")
                     break
-            except Exception as e:
-                last_ticker_exc = e
-                print(
-                    f"Ticker {ticker}: falha (attempt={attempt}/{max_attempts}): {type(e).__name__}: {e}"
-                )
-            time.sleep(sleep_seconds)
 
-        if last_ticker_exc is not None:
-            print(f"Ticker {ticker}: última falha: {type(last_ticker_exc).__name__}: {last_ticker_exc}")
+                print(f"Ticker {ticker}: vazio (attempt={attempt}/{max_attempts}).")
+            except Exception as e:
+                last_error = e
+                print(f"Ticker {ticker}: falha (attempt={attempt}/{max_attempts}): {type(e).__name__}: {e}")
+
+            # backoff simples
+            time.sleep(base_sleep_seconds * attempt)
+
+        if ticker not in successes:
+            failures[ticker] = (
+                f"{type(last_error).__name__}: {last_error}" if last_error is not None else "empty"
+            )
+
+        # pequena pausa entre tickers para reduzir chance de 429
+        time.sleep(0.75)
 
     if not frames:
-        if last_exc is not None:
-            raise last_exc
-        return pd.DataFrame()
+        return pd.DataFrame(), successes, failures
 
-    return pd.concat(frames, axis=1).sort_index()
+    df_all = pd.concat(frames, axis=1).sort_index()
+    return df_all, successes, failures
+
+
 
 def lambda_handler(event, context):
     print("Iniciando Extração...")
@@ -177,13 +215,19 @@ def lambda_handler(event, context):
         dataset_dir = os.path.join(tmp_dir, "raw_dataset")
         
         try:
-            df = _download_yfinance_with_fallback(
+            df, successes, failures = _download_yfinance_partial(
                 tickers=tickers,
                 start_date=start_date,
                 end_date=end_date,
                 max_attempts=3,
-                sleep_seconds=1.5,
+                base_sleep_seconds=1.5,
             )
+
+            print(f"Resumo download: ok={len(successes)} fail={len(failures)}")
+            if failures:
+                # Log curto pra não estourar CloudWatch
+                for t, reason in list(failures.items())[:10]:
+                    print(f"Falha {t}: {reason}")
             if df is None or df.empty:
                 print("Nenhum dado retornado pelo yfinance; nada para salvar na RAW.")
                 try:
@@ -192,7 +236,13 @@ def lambda_handler(event, context):
                     pass
                 return {
                     'statusCode': 204,
-                    'body': json.dumps('Nenhum dado retornado; extração ignorada.')
+                    'body': json.dumps(
+                        {
+                            'message': 'Nenhum dado retornado; extração ignorada.',
+                            'successes': successes,
+                            'failures': failures,
+                        }
+                    )
                 }
             
             # Usa stack e reseta o multiindex para ter virar dados tabulares
