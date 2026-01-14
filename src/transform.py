@@ -5,25 +5,49 @@ Processa dados brutos (raw), aplica feature engineering e salva em:
 - /agg: dados agregados mensalmente
 """
 import sys
+import os
 import polars as pl
 import polars.selectors as cs
-from awsglue.utils import getResolvedOptions
+
+# AWS Glue utils só está disponível no ambiente AWS Glue
+# Para execução local/container, usa fallback simples
+try:
+    from awsglue.utils import getResolvedOptions
+    RUNNING_ON_GLUE = True
+except ImportError:
+    RUNNING_ON_GLUE = False
+    # Mock simples para desenvolvimento local
+    def getResolvedOptions(args, options):
+        result = {}
+        for i, arg in enumerate(args):
+            if arg.startswith('--'):
+                key = arg[2:]
+                if key in options and i + 1 < len(args):
+                    result[key] = args[i + 1]
+        return result
 
 print("=" * 80)
 print("INICIANDO TRANSFORMAÇÃO DE DADOS - BLUE CHIPS B3")
+print(f"Ambiente: {'AWS Glue' if RUNNING_ON_GLUE else 'Local/Container'}")
 print("=" * 80)
 
-# Lê argumentos passados pelo Glue Job
-try:
-    args = getResolvedOptions(sys.argv, ['JOB_NAME', 'BUCKET_NAME', 'INPUT_PREFIX'])
-    bucket_name = args['BUCKET_NAME']
-    input_prefix = args['INPUT_PREFIX']
-except Exception:
-    # Fallback: compatibilidade com INPUT_KEY (versões antigas)
-    args = getResolvedOptions(sys.argv, ['JOB_NAME', 'BUCKET_NAME', 'INPUT_KEY'])
-    bucket_name = args['BUCKET_NAME']
-    input_key = args['INPUT_KEY']
-    input_prefix = input_key.rsplit('/', 1)[0] + '/'
+# Lê argumentos passados pelo Glue Job ou variáveis de ambiente
+if RUNNING_ON_GLUE:
+    try:
+        args = getResolvedOptions(sys.argv, ['JOB_NAME', 'BUCKET_NAME', 'INPUT_PREFIX'])
+        bucket_name = args['BUCKET_NAME']
+        input_prefix = args['INPUT_PREFIX']
+    except Exception:
+        # Fallback: compatibilidade com INPUT_KEY (versões antigas)
+        args = getResolvedOptions(sys.argv, ['JOB_NAME', 'BUCKET_NAME', 'INPUT_KEY'])
+        bucket_name = args['BUCKET_NAME']
+        input_key = args['INPUT_KEY']
+        input_prefix = input_key.rsplit('/', 1)[0] + '/'
+else:
+    # Execução local: usa variáveis de ambiente ou argumentos
+    bucket_name = os.environ.get('BUCKET_NAME', 'default-bucket')
+    input_prefix = os.environ.get('INPUT_PREFIX', 'raw/')
+    print(f"⚠️  Usando variáveis de ambiente: BUCKET_NAME={bucket_name}")
 
 input_path = f"s3://{bucket_name}/{input_prefix}"
 print(f"\n📥 Lendo dados de: {input_path}\n")
