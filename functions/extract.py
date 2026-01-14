@@ -4,11 +4,13 @@ Baixa dados históricos via yfinance e salva em formato Parquet particionado por
 """
 import json
 import os
+from pathlib import Path
 from datetime import datetime, timedelta
 
 # Lambda: redireciona HOME para /tmp (único diretório gravável)
-# Evita erro do yfinance ao tentar criar cache
+# Cria diretório de cache antes de importar yfinance
 os.environ["HOME"] = "/tmp"
+Path("/tmp/.cache/py-yfinance").mkdir(parents=True, exist_ok=True)
 
 import pandas as pd
 import yfinance as yf
