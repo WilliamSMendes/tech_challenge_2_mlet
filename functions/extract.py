@@ -125,11 +125,16 @@ def save_to_parquet_partitioned(df: pd.DataFrame, output_dir: str):
         df: DataFrame a ser salvo
         output_dir: Diretório de saída
     """
+    # Faz uma cópia para não modificar o original
+    df_copy = df.copy()
+    
     # Cria coluna de partição (apenas data, sem hora)
-    df['data_particao'] = pd.to_datetime(df['Date']).dt.date
+    # Garante que Date seja datetime
+    df_copy['Date'] = pd.to_datetime(df_copy['Date'])
+    df_copy['data_particao'] = df_copy['Date'].dt.date.astype(str)
     
     # Converte para PyArrow Table
-    table = pa.Table.from_pandas(df, preserve_index=False)
+    table = pa.Table.from_pandas(df_copy, preserve_index=False)
     
     # Salva particionado por data
     pq.write_to_dataset(
@@ -140,6 +145,7 @@ def save_to_parquet_partitioned(df: pd.DataFrame, output_dir: str):
     )
     
     print(f"✓ Dados salvos em: {output_dir}")
+    print(f"  Partições por data: {df_copy['data_particao'].nunique()}")
 
 
 def upload_to_s3(local_dir: str, bucket: str, s3_prefix: str):
