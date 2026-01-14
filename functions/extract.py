@@ -249,6 +249,11 @@ def lambda_handler(event, context):
         print(f"\nFazendo upload para S3: s3://{bucket_name}/{s3_prefix}")
         upload_to_s3(output_dir, bucket_name, s3_prefix)
         
+        # 4. Cria arquivo _SUCCESS para disparar o Glue
+        success_key = f"{s3_prefix}/_SUCCESS"
+        s3_client.put_object(Bucket=bucket_name, Key=success_key, Body=b'')
+        print(f"✓ Marker criado: s3://{bucket_name}/{success_key}")
+        
         print("\n" + "=" * 60)
         print("✓ EXTRAÇÃO CONCLUÍDA COM SUCESSO!")
         print("=" * 60)
