@@ -44,14 +44,29 @@ def download_ticker_data(ticker: str, start_date: str, end_date: str) -> pd.Data
     print(f"Baixando dados para {ticker}...")
     
     try:
-        # Usa timeout mais curto e configurações adequadas para Lambda
+        # Tenta método 1: yf.download (mais rápido)
         df = yf.download(
             ticker, 
             start=start_date, 
             end=end_date, 
             progress=False,
-            timeout=10  # Timeout de 10 segundos
+            timeout=10
         )
+        
+        if not df.empty:
+            df = df.reset_index()
+            df['Ticker'] = ticker
+            print(f"  ✓ {len(df)} registros baixados (método download)")
+            return df
+            
+    except Exception as e:
+        print(f"  ⚠ download falhou: {type(e).__name__}: {str(e)}")
+    
+    try:
+        # Tenta método 2: Ticker().history() (mais robusto)
+        print(f"  → Tentando método alternativo...")
+        ticker_obj = yf.Ticker(ticker)
+        df = ticker_obj.history(start=start_date, end=end_date)
         
         if df.empty:
             print(f"  ⚠ Nenhum dado retornado para {ticker}")
@@ -64,7 +79,7 @@ def download_ticker_data(ticker: str, start_date: str, end_date: str) -> pd.Data
         # Adiciona coluna com o ticker
         df['Ticker'] = ticker
         
-        print(f"  ✓ {len(df)} registros baixados")
+        print(f"  ✓ {len(df)} registros baixados (método alternativo)")
         return df
         
     except Exception as e:

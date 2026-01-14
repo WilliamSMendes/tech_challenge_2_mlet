@@ -35,8 +35,8 @@ jobs:
           cd ../functions
           mkdir -p package
 
-          # Instala apenas yfinance (pandas/pyarrow vêm do Layer)
-          pip install yfinance==0.2.40 -t ./package
+          # Instala yfinance mais recente com correções para ações BR
+          pip install yfinance --upgrade -t ./package
 
           cp extract.py ./package/
 
