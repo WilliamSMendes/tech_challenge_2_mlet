@@ -128,24 +128,23 @@ def save_to_parquet_partitioned(df: pd.DataFrame, output_dir: str):
     # Faz uma cópia para não modificar o original
     df_copy = df.copy()
     
-    print(f"  Colunas antes: {list(df_copy.columns)}")
+    # Achata MultiIndex se existir (yfinance pode retornar MultiIndex)
+    if isinstance(df_copy.columns, pd.MultiIndex):
+        print("  Achatando MultiIndex...")
+        df_copy.columns = ['_'.join(col).strip('_') if col[1] else col[0] 
+                           for col in df_copy.columns.values]
+    
+    print(f"  Colunas: {list(df_copy.columns)}")
     
     # Cria coluna de partição (apenas data, sem hora)
     # Garante que Date seja datetime
     df_copy['Date'] = pd.to_datetime(df_copy['Date'])
     df_copy['data_particao'] = df_copy['Date'].dt.strftime('%Y-%m-%d')
     
-    print(f"  Colunas depois: {list(df_copy.columns)}")
-    print(f"  Exemplo data_particao: {df_copy['data_particao'].iloc[0]}")
+    print(f"  Partições únicas: {df_copy['data_particao'].nunique()}")
     
-    # Converte para PyArrow Table - IMPORTANTE: inclui todas as colunas
+    # Converte para PyArrow Table
     table = pa.Table.from_pandas(df_copy, preserve_index=False)
-    
-    print(f"  Colunas na tabela PyArrow: {table.column_names}")
-    
-    # Verifica se a coluna existe antes de particionar
-    if 'data_particao' not in table.column_names:
-        raise ValueError(f"Coluna data_particao não encontrada. Colunas: {table.column_names}")
     
     # Salva particionado por data
     pq.write_to_dataset(
@@ -156,7 +155,6 @@ def save_to_parquet_partitioned(df: pd.DataFrame, output_dir: str):
     )
     
     print(f"✓ Dados salvos em: {output_dir}")
-    print(f"  Partições por data: {df_copy['data_particao'].nunique()}")
 
 
 def upload_to_s3(local_dir: str, bucket: str, s3_prefix: str):
