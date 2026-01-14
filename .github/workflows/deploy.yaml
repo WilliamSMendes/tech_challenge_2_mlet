@@ -35,8 +35,9 @@ jobs:
           cd ../functions
           mkdir -p package
 
-          # Instala yfinance mais recente com correções para ações BR
-          pip install yfinance --upgrade -t ./package
+          # Instala yfinance compatível com Python 3.9
+          # Versão 0.2.48 é a última estável que funciona com Python 3.9
+          pip install yfinance==0.2.48 -t ./package
 
           cp extract.py ./package/
 
