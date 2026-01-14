@@ -80,7 +80,7 @@ resource "aws_lambda_function" "extract_lambda" {
   function_name    = "b3_extract_function"
   role             = aws_iam_role.lambda_exec_role.arn
   handler          = "extract.lambda_handler"
-  runtime          = "python3.9"
+  runtime          = "python3.10"
   source_code_hash = data.archive_file.extract_lambda_zip.output_base64sha256
   timeout          = 300
 
@@ -92,8 +92,8 @@ resource "aws_lambda_function" "extract_lambda" {
     }
   }
 
-  # Layer para AWS SDK Pandas
-  layers = ["arn:aws:lambda:us-east-1:336392948345:layer:AWSSDKPandas-Python39:12"]
+  # Layer para AWS SDK Pandas (compatível com Python 3.10)
+  layers = ["arn:aws:lambda:us-east-1:336392948345:layer:AWSSDKPandas-Python310:19"]
 
   tags = local.default_tags
 }
