@@ -50,15 +50,25 @@ else:
     print(f"⚠️  Usando variáveis de ambiente: BUCKET_NAME={bucket_name}")
 
 # Detecta se é path local ou S3
-if input_prefix.startswith('/') or input_prefix.startswith('C:') or input_prefix.startswith('\\'):
+# Verifica tanto bucket_name quanto input_prefix para paths locais
+is_local = (
+    bucket_name.startswith('/') or 
+    bucket_name.startswith('C:') or 
+    bucket_name.startswith('\\') or
+    input_prefix.startswith('/') or 
+    input_prefix.startswith('C:') or 
+    input_prefix.startswith('\\')
+)
+
+if is_local:
     # Path local absoluto - usa diretamente
     input_path = input_prefix
-    bucket_name = input_prefix.rsplit('/', 2)[0] if '/' in input_prefix else bucket_name
-    is_local = True
+    # Se bucket_name não for absoluto, usa o diretório base do input_prefix
+    if not (bucket_name.startswith('/') or bucket_name.startswith('C:')):
+        bucket_name = input_prefix.rsplit('/', 1)[0] if '/' in input_prefix else bucket_name
 else:
     # Path S3
     input_path = f"s3://{bucket_name}/{input_prefix}"
-    is_local = False
 
 print(f"\n📥 Lendo dados de: {input_path}")
 
