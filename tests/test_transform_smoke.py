@@ -98,6 +98,14 @@ def run_transform_local(input_path: str, bucket_name: str):
 def validate_output(bucket_path: str):
     """Valida se os arquivos de saída foram criados corretamente."""
     print(f"\n✅ Validando saídas...")
+    print(f"  Base path: {bucket_path}")
+    
+    # Lista tudo no diretório base para debug
+    import os
+    print(f"  Conteúdo do diretório base:")
+    for item in os.listdir(bucket_path):
+        item_path = Path(bucket_path) / item
+        print(f"    - {item} {'(dir)' if item_path.is_dir() else '(file)'}")
     
     refined_path = Path(bucket_path) / 'refined'
     agg_path = Path(bucket_path) / 'agg'
