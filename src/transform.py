@@ -49,8 +49,18 @@ else:
     input_prefix = os.environ.get('INPUT_PREFIX', 'raw/')
     print(f"⚠️  Usando variáveis de ambiente: BUCKET_NAME={bucket_name}")
 
-input_path = f"s3://{bucket_name}/{input_prefix}"
-print(f"\n📥 Lendo dados de: {input_path}\n")
+# Detecta se é path local ou S3
+if input_prefix.startswith('/') or input_prefix.startswith('C:') or input_prefix.startswith('\\'):
+    # Path local absoluto - usa diretamente
+    input_path = input_prefix
+    bucket_name = input_prefix.rsplit('/', 2)[0] if '/' in input_prefix else bucket_name
+    is_local = True
+else:
+    # Path S3
+    input_path = f"s3://{bucket_name}/{input_prefix}"
+    is_local = False
+
+print(f"\n📥 Lendo dados de: {input_path}")
 
 # ============================================================================
 # 1. LEITURA E LIMPEZA DOS DADOS RAW
@@ -145,7 +155,11 @@ print(f"✓ Registros finais: {df_final.shape[0]:,}\n")
 # 3. SALVAR DADOS REFINED (PARTICIONADOS POR DATA E NOME DA AÇÃO)
 # ============================================================================
 
-output_path_refined = f"s3://{bucket_name}/refined/"
+if is_local:
+    output_path_refined = f"{bucket_name}/refined/"
+else:
+    output_path_refined = f"s3://{bucket_name}/refined/"
+
 print(f"💾 Salvando dados REFINED em: {output_path_refined}")
 print(f"   Particionamento: data_pregao + nome_acao\n")
 
@@ -191,7 +205,11 @@ df_agregado = df_agregado.with_columns(cs.float().round(2))
 print(f"✓ Agregações geradas: {df_agregado.shape[0]:,} registros mensais\n")
 
 # Salva dados agregados
-output_path_agg = f"s3://{bucket_name}/agg/"
+if is_local:
+    output_path_agg = f"{bucket_name}/agg/"
+else:
+    output_path_agg = f"s3://{bucket_name}/agg/"
+
 print(f"💾 Salvando dados AGREGADOS em: {output_path_agg}\n")
 
 df_agregado.write_parquet(

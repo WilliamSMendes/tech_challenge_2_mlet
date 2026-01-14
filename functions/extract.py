@@ -21,15 +21,10 @@ import boto3
 # Cliente S3
 s3_client = boto3.client('s3')
 
-# Lista de tickers Blue Chips B3
+# Lista de tickers - Bancos Blue Chips B3
 TICKERS_BLUE_CHIPS = [
-    'PETR4.SA',  # Petrobras
-    'VALE3.SA',  # Vale
     'ITUB4.SA',  # Itaú
     'BBDC4.SA',  # Bradesco
-    'WEGE3.SA',  # WEG
-    'ABEV3.SA',  # Ambev
-    'B3SA3.SA',  # B3
     'BBAS3.SA'   # Banco do Brasil
 ]
 
@@ -49,10 +44,18 @@ def download_ticker_data(ticker: str, start_date: str, end_date: str) -> pd.Data
     print(f"Baixando dados para {ticker}...")
     
     try:
-        df = yf.download(ticker, start=start_date, end=end_date, progress=False)
+        # Usa timeout mais curto e configurações adequadas para Lambda
+        df = yf.download(
+            ticker, 
+            start=start_date, 
+            end=end_date, 
+            progress=False,
+            timeout=10  # Timeout de 10 segundos
+        )
         
         if df.empty:
             print(f"  ⚠ Nenhum dado retornado para {ticker}")
+            print(f"     Período: {start_date} até {end_date}")
             return pd.DataFrame()
         
         # Reset index para transformar Date em coluna
@@ -65,7 +68,7 @@ def download_ticker_data(ticker: str, start_date: str, end_date: str) -> pd.Data
         return df
         
     except Exception as e:
-        print(f"  ✗ Erro ao baixar {ticker}: {str(e)}")
+        print(f"  ✗ Erro ao baixar {ticker}: {type(e).__name__}: {str(e)}")
         return pd.DataFrame()
 
 
@@ -181,12 +184,26 @@ def lambda_handler(event, context):
     
     try:
         # 1. Baixar dados
+        print("🚀 Iniciando download dos tickers...\n")
         df = extract_all_tickers(TICKERS_BLUE_CHIPS, start_date_str, end_date_str)
         
         if df.empty:
+            print("\n⚠️  DIAGNÓSTICO:")
+            print("   • Todos os tickers retornaram vazios")
+            print("   • Possíveis causas:")
+            print("     - Lambda sem acesso à internet (VPC sem NAT Gateway)")
+            print("     - Yahoo Finance bloqueou as requisições")
+            print("     - Período sem dados de mercado")
+            print(f"     - Tickers solicitados: {TICKERS_BLUE_CHIPS}")
+            
             return {
                 'statusCode': 204,
-                'body': json.dumps('Nenhum dado foi extraído.')
+                'body': json.dumps({
+                    'message': 'Nenhum dado foi extraído.',
+                    'reason': 'Todos os tickers retornaram vazios - possível problema de conectividade',
+                    'period': f"{start_date_str} até {end_date_str}",
+                    'tickers': TICKERS_BLUE_CHIPS
+                })
             }
         
         # 2. Salvar localmente em /tmp (Lambda tem acesso a /tmp)

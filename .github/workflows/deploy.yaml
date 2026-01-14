@@ -35,12 +35,18 @@ jobs:
           cd ../functions
           mkdir -p package
 
-          pip install yfinance==0.2.30 pysqlite3-binary -t ./package
+          # Instala apenas yfinance (pandas/pyarrow vêm do Layer)
+          pip install yfinance==0.2.40 -t ./package
 
           cp extract.py ./package/
 
+          # Remove libs pesadas que já estão no Layer
           cd package
-          rm -rf pandas numpy pyarrow
+          rm -rf pandas* numpy* pyarrow* dateutil* pytz* six* tzdata*
+          
+          # Mantém apenas yfinance e suas dependências leves
+          echo "Pacote Lambda criado com yfinance + extract.py"
+          du -sh .
           cd ..
         working-directory: ./terraform
 
