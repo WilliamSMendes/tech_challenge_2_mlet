@@ -104,7 +104,7 @@ resource "aws_lambda_function" "s3_trigger_glue" {
   function_name    = "s3_trigger_glue_transform"
   role             = aws_iam_role.lambda_exec_role.arn
   handler          = "trigger_glue.lambda_handler"
-  runtime          = "python3.9"
+  runtime          = "python3.10"
   source_code_hash = data.archive_file.trigger_lambda_zip.output_base64sha256
   timeout          = 60
 
