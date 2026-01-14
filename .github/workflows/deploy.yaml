@@ -85,9 +85,35 @@ jobs:
             --query 'FunctionError' \
             --output text)
 
+          echo "=== Lambda Response ==="
           cat response.json
+          echo ""
+          echo "======================="
 
           if [ "$FUNCTION_ERROR" != "None" ]; then
-            echo "Lambda returned FunctionError=$FUNCTION_ERROR"
+            echo "❌ Lambda returned FunctionError=$FUNCTION_ERROR"
             exit 1
           fi
+
+          # Verifica status code (200=sucesso, 204=sem dados mas sem erro)
+          STATUS_CODE=$(jq -r '.statusCode' response.json)
+          echo "Status Code: $STATUS_CODE"
+
+          if [ "$STATUS_CODE" != "200" ] && [ "$STATUS_CODE" != "204" ]; then
+            echo "❌ Unexpected status code: $STATUS_CODE"
+            exit 1
+          fi
+
+          if [ "$STATUS_CODE" = "204" ]; then
+            echo "⚠️  Lambda executou mas não extraiu dados (possivelmente sem conectividade ao Yahoo Finance)"
+            echo "✓ Smoke test passou (Lambda funcional)"
+          else
+            echo "✅ Lambda executou e extraiu dados com sucesso!"
+          fi
+
+      - name: Smoke test - Transform script
+        run: |
+          cd ..
+          pip install polars pyarrow pandas
+          python tests/test_transform_smoke.py
+        working-directory: ./terraform

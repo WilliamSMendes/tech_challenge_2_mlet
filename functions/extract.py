@@ -164,10 +164,20 @@ def lambda_handler(event, context):
     end_date_str = end_date.strftime('%Y-%m-%d')
     
     print(f"\nPeríodo: {start_date_str} até {end_date_str}")
-    print(f"Tickers: {', '.join(TICKERS_BLUE_CHIPS)}\n")
+    print(f"Tickers: {', '.join(TICKERS_BLUE_CHIPS)}")
     
     # Bucket S3
     bucket_name = os.environ.get('BUCKET_NAME', 'meu-bucket-raw')
+    print(f"Bucket S3: {bucket_name}\n")
+    
+    # Teste de conectividade Yahoo Finance
+    print("🔍 Testando conectividade com Yahoo Finance...")
+    try:
+        import socket
+        socket.create_connection(("finance.yahoo.com", 443), timeout=5)
+        print("✓ Conectividade OK\n")
+    except Exception as e:
+        print(f"⚠️  Problema de conectividade: {e}\n")
     
     try:
         # 1. Baixar dados
