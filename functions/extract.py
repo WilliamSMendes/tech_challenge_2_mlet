@@ -141,29 +141,22 @@ def save_to_parquet_partitioned(df: pd.DataFrame, output_dir: str):
     print(f"[OK] Dados salvos em: {output_dir}")
 
 
-def upload_to_s3(local_dir: str, bucket: str, s3_prefix: str):
+def upload_to_s3(df: pd.DataFrame, bucket: str, s3_prefix: str):
     """
     Faz upload de um diretorio local para S3.
     
     Args:
-        local_dir: Diretorio local contendo os arquivos
+        df: DataFrame contendo os dados a serem enviados
         bucket: Nome do bucket S3
         s3_prefix: Prefixo (caminho) no S3
     """
-    uploaded_count = 0
-    
-    for root, _, files in os.walk(local_dir):
-        for filename in files:
-            local_path = os.path.join(root, filename)
-            relative_path = os.path.relpath(local_path, local_dir)
-            s3_key = f"{s3_prefix}/{relative_path}".replace('\\', '/')
-            
-            print(f"  Uploading: {s3_key}")
-            s3_client.upload_file(local_path, bucket, s3_key)
-            uploaded_count += 1
-    
-    print(f"[OK] {uploaded_count} arquivos enviados para S3")
-
+    try:
+        s3_client.upload_file(df, bucket, s3_prefix)
+        print(f"[OK] DF com {df.shape[0]} linhas enviados para S3")
+        
+    except Exception as e:
+        print(f"[ERROR] Falha ao enviar para S3: {type(e).__name__}: {str(e)}")
+        raise
 
 def lambda_handler(event, context):
     """
@@ -224,20 +217,20 @@ def lambda_handler(event, context):
                 })
             }
         
-        output_dir = '/tmp/raw_data'
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        #output_dir = '/tmp/raw_data'
+        #Path(output_dir).mkdir(parents=True, exist_ok=True)
         
-        save_to_parquet_partitioned(df, output_dir)
+        #save_to_parquet_partitioned(df, output_dir)
         
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        s3_prefix = f"raw/execution_date={datetime.now().strftime('%Y-%m-%d')}/run_{timestamp}"
+        #timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        s3_prefix = f"{bucket_name}/raw/"
         
-        print(f"\nFazendo upload para S3: s3://{bucket_name}/{s3_prefix}")
-        upload_to_s3(output_dir, bucket_name, s3_prefix)
+        print(f"\nFazendo upload para S3: s3://{s3_prefix}")
+        upload_to_s3(df, bucket_name, s3_prefix)
         
-        success_key = f"{s3_prefix}/_SUCCESS"
-        s3_client.put_object(Bucket=bucket_name, Key=success_key, Body=b'')
-        print(f"[OK] Marker criado: s3://{bucket_name}/{success_key}")
+        #success_key = f"{s3_prefix}/_SUCCESS"
+        #s3_client.put_object(Bucket=bucket_name, Key=success_key, Body=b'')
+        #print(f"[OK] Marker criado: s3://{bucket_name}/{success_key}")
         
         print("\n" + "=" * 60)
         print("[OK] EXTRACAO CONCLUIDA COM SUCESSO!")
