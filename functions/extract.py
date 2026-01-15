@@ -151,7 +151,7 @@ def upload_to_s3(df: pd.DataFrame, bucket: str, s3_prefix: str):
         s3_prefix: Prefixo (caminho) no S3
     """
     try:
-        s3_client.upload_file(df, bucket, s3_prefix)
+        s3_client.put_object(Bucket=bucket, Key=s3_prefix, Body=df.to_parquet(index=False))
         print(f"[OK] DF com {df.shape[0]} linhas enviados para S3")
         
     except Exception as e:
