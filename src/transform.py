@@ -81,6 +81,41 @@ df_raw = pl.read_parquet(input_path)
 print(f"✓ Dados carregados: {df_raw.shape[0]:,} registros, {df_raw.shape[1]} colunas")
 print(f"  Colunas: {', '.join(df_raw.columns)}\n")
 
+# Verifica se os dados estão em formato "wide" (colunas como Close_ITUB4.SA)
+# ou "long" (colunas como Close + coluna Ticker)
+is_wide_format = any('_' in col and col.split('_')[0] in ['Close', 'Open', 'High', 'Low', 'Volume'] 
+                     for col in df_raw.columns if col not in ['Date', 'Ticker', 'data_particao'])
+
+if is_wide_format:
+    print("📋 Detectado formato WIDE - convertendo para formato LONG...\n")
+    
+    # Extrai os tickers únicos das colunas (exemplo: ITUB4.SA de Close_ITUB4.SA)
+    tickers = []
+    for col in df_raw.columns:
+        if '_' in col and col.split('_')[0] in ['Close', 'Open', 'High', 'Low', 'Volume']:
+            ticker = '_'.join(col.split('_')[1:])  # Pega tudo depois do primeiro _
+            if ticker not in tickers:
+                tickers.append(ticker)
+    
+    print(f"  Tickers encontrados: {', '.join(tickers)}")
+    
+    # Converte de wide para long
+    dfs = []
+    for ticker in tickers:
+        df_ticker = df_raw.select([
+            pl.col("Date"),
+            pl.lit(ticker).alias("Ticker"),
+            pl.col(f"Close_{ticker}").alias("Close"),
+            pl.col(f"Open_{ticker}").alias("Open"),
+            pl.col(f"High_{ticker}").alias("High"),
+            pl.col(f"Low_{ticker}").alias("Low"),
+            pl.col(f"Volume_{ticker}").alias("Volume"),
+        ])
+        dfs.append(df_ticker)
+    
+    df_raw = pl.concat(dfs)
+    print(f"✓ Conversão concluída: {df_raw.shape[0]:,} registros\n")
+
 # Normaliza tipos de dados e ordena
 df_clean = df_raw.with_columns([
     pl.col("Ticker").cast(pl.Utf8, strict=False),
@@ -234,6 +269,148 @@ print("✓ Dados agregados salvos com sucesso!\n")
 # RESUMO FINAL
 # ============================================================================
 
+# ============================================================================
+# 5. CATALOGAÇÃO AUTOMÁTICA NO GLUE CATALOG
+# ============================================================================
+
+print("📚 Catalogando dados no Glue Catalog...\n")
+
+try:
+    import boto3
+    glue_client = boto3.client('glue')
+    
+    database_name = 'default'
+    table_refined = 'refined_stocks'
+    table_aggregated = 'aggregated_stocks_monthly'
+    
+    # Schema da tabela refined
+    refined_schema = [
+        {'Name': 'data_pregao', 'Type': 'date'},
+        {'Name': 'nome_acao', 'Type': 'string'},
+        {'Name': 'abertura', 'Type': 'double'},
+        {'Name': 'fechamento', 'Type': 'double'},
+        {'Name': 'max', 'Type': 'double'},
+        {'Name': 'min', 'Type': 'double'},
+        {'Name': 'volume_negociado', 'Type': 'bigint'},
+        {'Name': 'variacao_pct_dia', 'Type': 'double'},
+        {'Name': 'amplitude_dia', 'Type': 'double'},
+        {'Name': 'media_movel_7d', 'Type': 'double'},
+        {'Name': 'media_movel_14d', 'Type': 'double'},
+        {'Name': 'media_movel_30d', 'Type': 'double'},
+        {'Name': 'volatilidade_7d', 'Type': 'double'},
+        {'Name': 'lag_1d', 'Type': 'double'},
+        {'Name': 'lag_2d', 'Type': 'double'},
+        {'Name': 'lag_3d', 'Type': 'double'},
+    ]
+    
+    # Schema da tabela agregada
+    aggregated_schema = [
+        {'Name': 'nome_acao', 'Type': 'string'},
+        {'Name': 'mes_referencia', 'Type': 'date'},
+        {'Name': 'preco_medio_mensal', 'Type': 'double'},
+        {'Name': 'preco_minimo_mensal', 'Type': 'double'},
+        {'Name': 'preco_maximo_mensal', 'Type': 'double'},
+        {'Name': 'volume_total_mensal', 'Type': 'bigint'},
+        {'Name': 'volume_medio_diario', 'Type': 'double'},
+        {'Name': 'variacao_media_diaria_pct', 'Type': 'double'},
+        {'Name': 'volatilidade_media_mensal', 'Type': 'double'},
+        {'Name': 'dias_negociacao', 'Type': 'bigint'},
+    ]
+    
+    # Cria/atualiza tabela refined
+    try:
+        glue_client.create_table(
+            DatabaseName=database_name,
+            TableInput={
+                'Name': table_refined,
+                'StorageDescriptor': {
+                    'Columns': refined_schema,
+                    'Location': output_path_refined,
+                    'InputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat',
+                    'OutputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat',
+                    'SerdeInfo': {
+                        'SerializationLibrary': 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe'
+                    }
+                },
+                'PartitionKeys': [
+                    {'Name': 'data_pregao', 'Type': 'string'},
+                    {'Name': 'nome_acao', 'Type': 'string'}
+                ],
+                'TableType': 'EXTERNAL_TABLE'
+            }
+        )
+        print(f"✓ Tabela '{table_refined}' criada no database '{database_name}'")
+    except glue_client.exceptions.AlreadyExistsException:
+        glue_client.update_table(
+            DatabaseName=database_name,
+            TableInput={
+                'Name': table_refined,
+                'StorageDescriptor': {
+                    'Columns': refined_schema,
+                    'Location': output_path_refined,
+                    'InputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat',
+                    'OutputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat',
+                    'SerdeInfo': {
+                        'SerializationLibrary': 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe'
+                    }
+                },
+                'PartitionKeys': [
+                    {'Name': 'data_pregao', 'Type': 'string'},
+                    {'Name': 'nome_acao', 'Type': 'string'}
+                ],
+                'TableType': 'EXTERNAL_TABLE'
+            }
+        )
+        print(f"✓ Tabela '{table_refined}' atualizada no database '{database_name}'")
+    
+    # Cria/atualiza tabela agregada
+    try:
+        glue_client.create_table(
+            DatabaseName=database_name,
+            TableInput={
+                'Name': table_aggregated,
+                'StorageDescriptor': {
+                    'Columns': aggregated_schema,
+                    'Location': output_path_agg,
+                    'InputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat',
+                    'OutputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat',
+                    'SerdeInfo': {
+                        'SerializationLibrary': 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe'
+                    }
+                },
+                'TableType': 'EXTERNAL_TABLE'
+            }
+        )
+        print(f"✓ Tabela '{table_aggregated}' criada no database '{database_name}'")
+    except glue_client.exceptions.AlreadyExistsException:
+        glue_client.update_table(
+            DatabaseName=database_name,
+            TableInput={
+                'Name': table_aggregated,
+                'StorageDescriptor': {
+                    'Columns': aggregated_schema,
+                    'Location': output_path_agg,
+                    'InputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat',
+                    'OutputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat',
+                    'SerdeInfo': {
+                        'SerializationLibrary': 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe'
+                    }
+                },
+                'TableType': 'EXTERNAL_TABLE'
+            }
+        )
+        print(f"✓ Tabela '{table_aggregated}' atualizada no database '{database_name}'")
+    
+    print("\n✓ Catalogação concluída com sucesso!\n")
+    
+except Exception as e:
+    print(f"⚠️  Erro na catalogação (não-bloqueante): {str(e)}\n")
+    print("   (Os dados foram salvos, mas talvez seja necessário executar o Crawler)")
+
+# ============================================================================
+# RESUMO FINAL
+# ============================================================================
+
 print("=" * 80)
 print("✅ TRANSFORMAÇÃO CONCLUÍDA COM SUCESSO!")
 print("=" * 80)
@@ -242,4 +419,5 @@ print(f"   • Registros refined:  {df_final.shape[0]:,}")
 print(f"   • Registros agregados: {df_agregado.shape[0]:,}")
 print(f"   • Ações processadas:  {df_final['nome_acao'].n_unique()}")
 print(f"   • Features criadas:   {df_final.shape[1]}")
+print(f"   • Tabelas catalogadas: refined_stocks, aggregated_stocks_monthly")
 print("=" * 80)
