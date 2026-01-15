@@ -323,6 +323,41 @@ try:
         )
         print(f"[OK] Tabela '{table_refined}' atualizada no database '{database_name}'")
     
+    print("[INFO] Registrando particoes da tabela refined...")
+    try:
+        partitions = df_final.select(['data_pregao', 'nome_acao']).unique().sort(['data_pregao', 'nome_acao'])
+        partitions_added = 0
+        
+        for row in partitions.iter_rows(named=True):
+            data_pregao = str(row['data_pregao'])
+            nome_acao = row['nome_acao']
+            partition_location = f"{output_path_refined}/data_pregao={data_pregao}/nome_acao={nome_acao}/"
+            
+            try:
+                glue_client.create_partition(
+                    DatabaseName=database_name,
+                    TableName=table_refined,
+                    PartitionInput={
+                        'Values': [data_pregao, nome_acao],
+                        'StorageDescriptor': {
+                            'Columns': refined_schema,
+                            'Location': partition_location,
+                            'InputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat',
+                            'OutputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat',
+                            'SerdeInfo': {
+                                'SerializationLibrary': 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe'
+                            }
+                        }
+                    }
+                )
+                partitions_added += 1
+            except glue_client.exceptions.AlreadyExistsException:
+                pass
+        
+        print(f"[OK] {partitions_added} particoes registradas para tabela refined")
+    except Exception as e:
+        print(f"[WARN] Erro ao registrar particoes: {str(e)}")
+    
     try:
         glue_client.create_table(
             DatabaseName=database_name,
