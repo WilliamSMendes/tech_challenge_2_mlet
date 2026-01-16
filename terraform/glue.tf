@@ -57,7 +57,17 @@ resource "aws_iam_policy" "glue_policy" {
         Action   = ["glue:*", "cloudwatch:*", "logs:*"]
         Effect   = "Allow"
         Resource = "*"
+      },
+      {
+        Action = [
+          "athena:StartQueryExecution",
+          "athena:GetQueryExecution",
+          "athena:GetQueryResults"
+        ]
+        Effect   = "Allow"
+        Resource = "*"
       }
+    ]
     ]
   })
 }

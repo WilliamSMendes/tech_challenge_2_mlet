@@ -292,7 +292,10 @@ print("[INFO] Catalogando dados no Glue Catalog...\n")
 
 try:
     import boto3
+    import time
+    
     glue_client = boto3.client('glue')
+    athena_client = boto3.client('athena')
     
     database_name = 'default'
     table_refined = 'refined_stocks'
@@ -309,8 +312,14 @@ try:
         print(f"       Pulando catalogação (apenas para ambiente local)")
         raise Exception("Catalogacao requer S3 URIs")
     
+    # Configurar bucket para resultados do Athena
+    # Extrai account_id do bucket_name (formato: ACCOUNT_ID-data-lake-bucket)
+    account_id = bucket_name.split('-')[0] if '-' in bucket_name else 'unknown'
+    athena_result_bucket = f"s3://{account_id}-athena-results-bucket/"
+    
     print(f"[INFO] Location Refined: {output_path_refined}/")
-    print(f"[INFO] Location Aggregated: {output_path_agg}/\n")
+    print(f"[INFO] Location Aggregated: {output_path_agg}/")
+    print(f"[INFO] Athena Results: {athena_result_bucket}\n")
     
     refined_schema = [
         {'Name': 'nome_acao', 'Type': 'string'},
@@ -416,39 +425,81 @@ try:
                 print(f"[ERROR] Falha ao recriar tabela: {recreate_error}")
                 raise
     
-    print("[INFO] Registrando particoes da tabela refined...")
+    print("[INFO] Descobrindo particoes automaticamente (MSCK REPAIR)...")
     try:
-        partitions = df_final.select(['data_pregao']).unique().sort(['data_pregao'])
-        partitions_added = 0
+        # Usar o Athena client para rodar MSCK REPAIR TABLE
+        athena_client = boto3.client('athena')
+        athena_result_bucket = os.environ.get('ATHENA_RESULTS_BUCKET', f's3://{bucket_name}-athena-results/')
         
-        for row in partitions.iter_rows(named=True):
-            data_pregao = str(row['data_pregao'])
-            partition_location = f"{output_path_refined}/data_pregao={data_pregao}/"
+        # MSCK REPAIR TABLE para refined_stocks
+        query_refined = f"MSCK REPAIR TABLE {database_name}.{table_refined}"
+        print(f"   Executando: {query_refined}")
+        
+        response = athena_client.start_query_execution(
+            QueryString=query_refined,
+            QueryExecutionContext={'Database': database_name},
+            ResultConfiguration={'OutputLocation': athena_result_bucket}
+        )
+        
+        query_execution_id = response['QueryExecutionId']
+        print(f"   Query ID: {query_execution_id}")
+        
+        # Aguarda conclusão (timeout de 30s)
+        import time
+        max_wait = 30
+        for i in range(max_wait):
+            status = athena_client.get_query_execution(QueryExecutionId=query_execution_id)
+            state = status['QueryExecution']['Status']['State']
             
-            try:
-                glue_client.create_partition(
-                    DatabaseName=database_name,
-                    TableName=table_refined,
-                    PartitionInput={
-                        'Values': [data_pregao],
-                        'StorageDescriptor': {
-                            'Columns': refined_schema,
-                            'Location': partition_location,
-                            'InputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat',
-                            'OutputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat',
-                            'SerdeInfo': {
-                                'SerializationLibrary': 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe'
+            if state in ['SUCCEEDED']:
+                print(f"[OK] Partições da tabela refined descobertas automaticamente")
+                break
+            elif state in ['FAILED', 'CANCELLED']:
+                reason = status['QueryExecution']['Status'].get('StateChangeReason', 'Unknown')
+                print(f"[WARN] MSCK REPAIR falhou: {reason}")
+                break
+            
+            time.sleep(1)
+        else:
+            print(f"[WARN] MSCK REPAIR timeout após {max_wait}s")
+            
+    except Exception as e:
+        print(f"[WARN] Erro ao executar MSCK REPAIR para refined: {str(e)}")
+        print("   Tentando registrar partições manualmente...")
+        
+        # Fallback: registro manual apenas das partições processadas agora
+        try:
+            partitions = df_final.select(['data_pregao']).unique().sort(['data_pregao'])
+            partitions_added = 0
+            
+            for row in partitions.iter_rows(named=True):
+                data_pregao = str(row['data_pregao'])
+                partition_location = f"{output_path_refined}/data_pregao={data_pregao}/"
+                
+                try:
+                    glue_client.create_partition(
+                        DatabaseName=database_name,
+                        TableName=table_refined,
+                        PartitionInput={
+                            'Values': [data_pregao],
+                            'StorageDescriptor': {
+                                'Columns': refined_schema,
+                                'Location': partition_location,
+                                'InputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat',
+                                'OutputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat',
+                                'SerdeInfo': {
+                                    'SerializationLibrary': 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe'
+                                }
                             }
                         }
-                    }
-                )
-                partitions_added += 1
-            except glue_client.exceptions.AlreadyExistsException:
-                pass
-        
-        print(f"[OK] {partitions_added} particoes registradas para tabela refined")
-    except Exception as e:
-        print(f"[WARN] Erro ao registrar particoes: {str(e)}")
+                    )
+                    partitions_added += 1
+                except glue_client.exceptions.AlreadyExistsException:
+                    pass
+            
+            print(f"[OK] {partitions_added} partições registradas manualmente para tabela refined")
+        except Exception as manual_error:
+            print(f"[WARN] Erro no registro manual: {str(manual_error)}")
     
     try:
         glue_client.create_table(
@@ -493,39 +544,73 @@ try:
         )
         print(f"[OK] Tabela '{table_aggregated}' atualizada no database '{database_name}'")
     
-    print("[INFO] Registrando particoes da tabela agregada...")
+    print("[INFO] Descobrindo particoes automaticamente para tabela agregada (MSCK REPAIR)...")
     try:
-        partitions_agg = df_agregado.select(['mes_referencia']).unique().sort(['mes_referencia'])
-        partitions_agg_added = 0
+        # MSCK REPAIR TABLE para aggregated_stocks_monthly
+        query_agg = f"MSCK REPAIR TABLE {database_name}.{table_aggregated}"
+        print(f"   Executando: {query_agg}")
         
-        for row in partitions_agg.iter_rows(named=True):
-            mes_referencia = str(row['mes_referencia'])
-            partition_location_agg = f"{output_path_agg}/mes_referencia={mes_referencia}/"
+        response = athena_client.start_query_execution(
+            QueryString=query_agg,
+            QueryExecutionContext={'Database': database_name},
+            ResultConfiguration={'OutputLocation': athena_result_bucket}
+        )
+        
+        query_execution_id = response['QueryExecutionId']
+        print(f"   Query ID: {query_execution_id}")
+        
+        # Aguarda conclusão
+        for i in range(30):
+            status = athena_client.get_query_execution(QueryExecutionId=query_execution_id)
+            state = status['QueryExecution']['Status']['State']
             
-            try:
-                glue_client.create_partition(
-                    DatabaseName=database_name,
-                    TableName=table_aggregated,
-                    PartitionInput={
-                        'Values': [mes_referencia],
-                        'StorageDescriptor': {
-                            'Columns': aggregated_schema,
-                            'Location': partition_location_agg,
-                            'InputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat',
-                            'OutputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat',
-                            'SerdeInfo': {
-                                'SerializationLibrary': 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe'
+            if state == 'SUCCEEDED':
+                print(f"[OK] Partições da tabela agregada descobertas automaticamente")
+                break
+            elif state in ['FAILED', 'CANCELLED']:
+                reason = status['QueryExecution']['Status'].get('StateChangeReason', 'Unknown')
+                print(f"[WARN] MSCK REPAIR falhou: {reason}")
+                break
+            
+            time.sleep(1)
+            
+    except Exception as e:
+        print(f"[WARN] Erro ao executar MSCK REPAIR para agregada: {str(e)}")
+        print("   Tentando registrar partições manualmente...")
+        
+        # Fallback: registro manual
+        try:
+            partitions_agg = df_agregado.select(['mes_referencia']).unique().sort(['mes_referencia'])
+            partitions_agg_added = 0
+            
+            for row in partitions_agg.iter_rows(named=True):
+                mes_referencia = str(row['mes_referencia'])
+                partition_location_agg = f"{output_path_agg}/mes_referencia={mes_referencia}/"
+                
+                try:
+                    glue_client.create_partition(
+                        DatabaseName=database_name,
+                        TableName=table_aggregated,
+                        PartitionInput={
+                            'Values': [mes_referencia],
+                            'StorageDescriptor': {
+                                'Columns': aggregated_schema,
+                                'Location': partition_location_agg,
+                                'InputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat',
+                                'OutputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat',
+                                'SerdeInfo': {
+                                    'SerializationLibrary': 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe'
+                                }
                             }
                         }
-                    }
-                )
-                partitions_agg_added += 1
-            except glue_client.exceptions.AlreadyExistsException:
-                pass
-        
-        print(f"[OK] {partitions_agg_added} particoes registradas para tabela agregada")
-    except Exception as e:
-        print(f"[WARN] Erro ao registrar particoes agregadas: {str(e)}")
+                    )
+                    partitions_agg_added += 1
+                except glue_client.exceptions.AlreadyExistsException:
+                    pass
+            
+            print(f"[OK] {partitions_agg_added} partições registradas manualmente para tabela agregada")
+        except Exception as manual_error:
+            print(f"[WARN] Erro no registro manual: {str(manual_error)}")
     
     print("\n[OK] Catalogacao concluida com sucesso!\n")
     

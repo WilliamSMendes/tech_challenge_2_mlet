@@ -183,23 +183,31 @@ def lambda_handler(event, context):
     Extrai dados de acoes da B3, salva em Parquet e envia para S3.
     
     Args:
-        event: Evento da Lambda (nao utilizado)
+        event: Evento da Lambda. Pode conter:
+            - dry_run: bool - Se True, apenas testa extração sem salvar no S3
         context: Contexto da Lambda
     
     Returns:
         Dict com statusCode e body contendo resultado da execucao
     """
+    # Verifica se é execução em modo teste (dry-run)
+    dry_run = event.get('dry_run', False) if isinstance(event, dict) else False
+    
     print("=" * 60)
     print("INICIANDO EXTRACAO DE DADOS - BLUE CHIPS B3")
+    if dry_run:
+        print("[MODO TESTE - DRY RUN: NÃO VAI SALVAR NO S3]")
     print("=" * 60)
     
+    # Extrai apenas dados do dia anterior (D-1)
+    # O pipeline roda diariamente, então só precisa dos dados de ontem
     end_date = datetime.now() - timedelta(days=1)
-    start_date = end_date - timedelta(days=180)
+    start_date = end_date  # Mesmo dia: só D-1
     
     start_date_str = start_date.strftime('%Y-%m-%d')
     end_date_str = end_date.strftime('%Y-%m-%d')
     
-    print(f"\nPeriodo: {start_date_str} ate {end_date_str}")
+    print(f"\nData alvo (D-1): {start_date_str}")
     print(f"Tickers: {', '.join(TICKERS_BLUE_CHIPS)}")
     
     bucket_name = os.environ.get('BUCKET_NAME', 'meu-bucket-raw')
@@ -223,15 +231,16 @@ def lambda_handler(event, context):
             print("   - Possiveis causas:")
             print("     * Lambda sem acesso a internet (VPC sem NAT Gateway)")
             print("     * Yahoo Finance bloqueou as requisicoes")
-            print("     * Periodo sem dados de mercado")
+            print("     * Dia sem pregao (final de semana ou feriado)")
+            print(f"     * Data solicitada: {start_date_str}")
             print(f"     * Tickers solicitados: {TICKERS_BLUE_CHIPS}")
             
             return {
                 'statusCode': 204,
                 'body': json.dumps({
                     'message': 'Nenhum dado foi extraido.',
-                    'reason': 'Todos os tickers retornaram vazios - possivel problema de conectividade',
-                    'period': f"{start_date_str} ate {end_date_str}",
+                    'reason': 'Dia sem dados disponíveis (possivel fim de semana, feriado ou problema de conectividade)',
+                    'date': start_date_str,
                     'tickers': TICKERS_BLUE_CHIPS
                 })
             }
@@ -243,7 +252,23 @@ def lambda_handler(event, context):
         print("\n[INFO] Salvando dados em formato Parquet particionado...")
         save_to_parquet_partitioned(df, output_dir)
         
-        # Upload para S3
+        # Pula upload se for dry_run (modo teste)
+        if dry_run:
+            print("\n[DRY RUN] Pulando upload para S3 (modo teste)")
+            print(f"   Dados salvos localmente em: {output_dir}")
+            print(f"   Total de registros: {len(df)}")
+            
+            return {
+                'statusCode': 200,
+                'body': json.dumps({
+                    'message': 'Extracao concluida com sucesso (DRY RUN - nao salvou no S3)',
+                    'records': len(df),
+                    'tickers': len(df['Ticker'].unique()),
+                    'dry_run': True
+                })
+            }
+        
+        # Upload para S3 (apenas em produção)
         s3_prefix = "raw"
         
         print(f"\n[INFO] Fazendo upload para S3: s3://{bucket_name}/{s3_prefix}")
@@ -275,10 +300,11 @@ def lambda_handler(event, context):
 
 
 if __name__ == "__main__":
+    # Execução local para testes - usa período maior para garantir dados
     os.environ['BUCKET_NAME'] = 'test-bucket'
     
     end_date = datetime.now() - timedelta(days=1)
-    start_date = end_date - timedelta(days=180)
+    start_date = end_date - timedelta(days=180)  # 6 meses para testes locais
     
     df = extract_all_tickers(
         TICKERS_BLUE_CHIPS, 

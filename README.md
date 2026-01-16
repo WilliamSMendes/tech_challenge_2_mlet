@@ -4,12 +4,12 @@ Pipeline de dados (batch diário) para extrair cotações de ações da B3 via `
 
 ## Visão geral
 
-1. **EventBridge (agendado)** executa diariamente a Lambda de extração.
-2. **Lambda `extract.py`** baixa dados históricos (últimos 6 meses) e salva o bruto em **S3** (Parquet) na pasta `raw/` com partição por data de ingestão.
-3. **S3 Notification** (prefixo `raw/`, sufixo `.parquet`) aciona a Lambda de gatilho.
-4. **Lambda `trigger_glue.py`** inicia o **Glue Job `transform_job`**.
-5. **Glue `transform.py`** lê o bruto, faz transformações, e grava dados em `refined/` e `aggregated/` em Parquet.
-6. **Athena** consulta os datasets no S3 (workgroup `etl_workgroup`).
+1. **EventBridge (agendado)** executa diariamente (19:00 BRT / 22:00 UTC) a Lambda de extração.
+2. **Lambda `extract.py`** baixa dados de **D-1** (dia anterior) via yfinance e salva em **S3** (Parquet) na pasta `raw/` com particionamento Hive.
+3. Após salvar, cria arquivo **`_SUCCESS`** que aciona **S3 Notification**.
+4. **Lambda `trigger_glue.py`** verifica se não há job rodando e inicia o **Glue Job `transform_job`**.
+5. **Glue `transform.py`** lê o bruto, faz transformações (feature engineering), grava dados em `refined/` e `agg/` em Parquet (formato Hive), e **cataloga automaticamente** via **MSCK REPAIR TABLE**.
+6. **Athena** consulta os datasets no S3 (workgroup `etl_workgroup`) com partições automaticamente descobertas.
 
 ## Estrutura do repositório
 
@@ -28,61 +28,91 @@ requirements.txt        # Dependências para dev local/notebooks
 
 ## Dados extraídos
 
-A Lambda de extração usa o `yfinance` com os tickers (hardcoded no código):
+A Lambda de extração usa o `yfinance` com os tickers Blue Chips B3 (hardcoded no código):
 
-- `TOTS3.SA`
-- `LWSA3.SA`
-- `POSI3.SA`
-- `INTB3.SA`
-- `WEGE3.SA`
+- `ITUB4.SA` (Itaú Unibanco)
+- `BBDC4.SA` (Bradesco)
+- `BBAS3.SA` (Banco do Brasil)
 
-Período: do dia **D-1** até **6 meses antes**.
+**Período:** Apenas **D-1** (dia anterior). O pipeline roda diariamente às 19h BRT, extraindo dados de ontem.
 
-## Layout no S3
+**Modo Teste (dry_run):** A Lambda aceita `event.dry_run = true` para testar extração sem salvar no S3 (usado no smoke test do CI/CD).
 
-### RAW
+## Layout no S3 (Formato Hive)
 
-Arquivo parquet salvo em:
+### RAW (Bronze Layer)
 
-```
-s3://<DATA_LAKE_BUCKET>/raw/ingestion_date=YYYY-MM-DD/stocks_data.parquet
-```
-
-### REFINED
-
-Dados tratados e com features em:
+Arquivos parquet salvos com particionamento Hive:
 
 ```
-s3://<DATA_LAKE_BUCKET>/refined/
+s3://<DATA_LAKE_BUCKET>/raw/YYYY-MM-DD/data.parquet
+s3://<DATA_LAKE_BUCKET>/raw/_SUCCESS  (trigger marker)
 ```
 
-Particionamento: `data_pregao`.
+### REFINED (Silver Layer)
 
-### AGGREGATED
-
-Agregações mensais (volume total e preço médio mensal):
+Dados tratados com features (particionamento Hive):
 
 ```
-s3://<DATA_LAKE_BUCKET>/aggregated/
+s3://<DATA_LAKE_BUCKET>/refined/data_pregao=YYYY-MM-DD/data.parquet
 ```
+
+**Colunas:** `nome_acao`, `abertura`, `fechamento`, `max`, `min`, `volume_negociado`, `variacao_pct_dia`, `amplitude_dia`, `media_movel_7d`, `media_movel_14d`, `media_movel_30d`, `volatilidade_7d`, `lag_1d`, `lag_2d`, `lag_3d`
+
+### AGG (Gold Layer)
+
+Agregações mensais por ação (particionamento Hive):
+
+```
+s3://<DATA_LAKE_BUCKET>/agg/mes_referencia=YYYY-MM-DD/data.parquet
+```
+
+**Colunas:** `nome_acao`, `preco_medio_mensal`, `preco_minimo_mensal`, `preco_maximo_mensal`, `volume_total_mensal`, `volume_medio_diario`, `variacao_media_diaria_pct`, `volatilidade_media_mensal`, `dias_negociacao`
 
 ## Transformações (Glue)
 
-O script do Glue (`src/transform.py`) aplica:
+O script do Glue (`src/transform.py`) usa **Polars** para processar:
 
-- Renomeia colunas (ex.: `Open -> abertura`, `Close -> fechamento`, `Volume -> volume_negociado`).
-- Cálculo baseado em data/ordem temporal: **média móvel 7 dias** e **lags** (1d/2d/3d) por ticker.
-- Agregação: cálculo mensal com `sum(volume)` e `mean(fechamento)`.
+### Feature Engineering:
+- Renomeia colunas: `Open → abertura`, `Close → fechamento`, `Volume → volume_negociado`
+- **Médias móveis:** 7, 14 e 30 dias por ticker
+- **Lags temporais:** preços dos últimos 3 dias (lag_1d, lag_2d, lag_3d)
+- **Volatilidade:** desvio padrão 7 dias
+- **Métricas:** variação % diária, amplitude do dia
+
+### Agregações Mensais:
+- Preço médio, mínimo e máximo mensal
+- Volume total e médio diário
+- Variação média diária %
+- Volatilidade média mensal
+- Dias de negociação no mês
+
+### Catalogação Automática:
+- Cria/atualiza tabelas no **Glue Catalog** via boto3
+- Executa **MSCK REPAIR TABLE** via Athena para descobrir todas as partições automaticamente
+- Fallback para registro manual se MSCK falhar
 
 ## Infraestrutura (Terraform)
 
-O Terraform cria, entre outros:
+O Terraform provisiona:
 
-- Buckets S3: data lake, source code (scripts), resultados do Athena
-- 2 Lambdas: `b3_extract_function` e `s3_trigger_glue_transform`
-- Glue Job: `transform_job`
-- EventBridge Rule: `daily_b3_etl_trigger` (cron `0 9 * * ? *` → 09:00 UTC)
-- Athena Workgroup: `etl_workgroup`
+### Storage:
+- **S3 Data Lake Bucket:** raw/, refined/, agg/
+- **S3 Source Code Bucket:** scripts do Glue Job
+- **S3 Athena Results Bucket:** resultados de queries
+
+### Compute:
+- **Lambda Extract:** `b3_extract_function` (Python 3.10, 300s timeout, Layer: AWSSDKPandas)
+- **Lambda Trigger:** `s3_trigger_glue_transform` (Python 3.10, 60s timeout)
+- **Glue Job:** `transform_job` (2x G.1X workers, Polars + Python)
+
+### Orquestração:
+- **EventBridge Rule:** `daily_b3_etl_trigger` (cron `0 22 * * ? *` → 22:00 UTC / 19:00 BRT)
+- **S3 Event Notification:** trigga Lambda quando detecta `raw/_SUCCESS`
+
+### Analytics:
+- **Athena Workgroup:** `etl_workgroup`
+- **Glue Catalog:** database `default` com tabelas `refined_stocks` e `aggregated_stocks_monthly`
 
 ### Backend Terraform
 
@@ -112,35 +142,53 @@ Obs.: este repo anexa essas permissões via Terraform no arquivo `terraform/athe
 
 ## Consultas no Athena
 
-O workgroup criado é `etl_workgroup` e os resultados vão para o bucket `athena_results_bucket` em:
+O workgroup `etl_workgroup` salva resultados em:
 
 ```
 s3://<ATHENA_RESULTS_BUCKET>/query_results/
 ```
 
-Para consultar `refined/` e `aggregated/`, crie tabelas no Glue Data Catalog (via Glue Crawler ou SQL no Athena).
+### Tabelas Automáticas
 
-Exemplo (ajuste o `LOCATION` para o seu bucket):
+As tabelas são **criadas e catalogadas automaticamente** pelo Glue Job via MSCK REPAIR TABLE:
+
+- `default.refined_stocks` - Particionada por `data_pregao`
+- `default.aggregated_stocks_monthly` - Particionada por `mes_referencia`
+
+### Queries de Exemplo
 
 ```sql
-CREATE EXTERNAL TABLE IF NOT EXISTS refined_stocks (
-	nome_acao string,
-	abertura double,
-	fechamento double,
-	max double,
-	min double,
-	volume_negociado bigint,
-	media_movel_7d double,
-	lag_1d double,
-	lag_2d double,
-	lag_3d double
-)
-PARTITIONED BY (data_pregao date)
-STORED AS PARQUET
-LOCATION 's3://<DATA_LAKE_BUCKET>/refined/';
+-- Últimos 10 dias de uma ação
+SELECT 
+    data_pregao,
+    nome_acao,
+    fechamento,
+    media_movel_7d,
+    volatilidade_7d
+FROM default.refined_stocks
+WHERE nome_acao = 'itub4'
+    AND data_pregao >= DATE_ADD('day', -10, CURRENT_DATE)
+ORDER BY data_pregao DESC;
+
+-- Agregação mensal de todas as ações
+SELECT 
+    mes_referencia,
+    nome_acao,
+    preco_medio_mensal,
+    volume_total_mensal,
+    dias_negociacao
+FROM default.aggregated_stocks_monthly
+ORDER BY mes_referencia DESC, nome_acao;
 ```
 
-Depois, rode `MSCK REPAIR TABLE refined_stocks;` para carregar partições.
+### Reparar Partições Manualmente (se necessário)
+
+Se as partições não aparecerem automaticamente:
+
+```sql
+MSCK REPAIR TABLE default.refined_stocks;
+MSCK REPAIR TABLE default.aggregated_stocks_monthly;
+```
 
 ## Desenvolvimento local
 

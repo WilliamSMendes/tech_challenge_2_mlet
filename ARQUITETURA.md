@@ -5,64 +5,64 @@
 ```mermaid
 graph TB
     subgraph "1️⃣ AGENDAMENTO"
-        EB[EventBridge Scheduler<br/>cron: 22:00 UTC diário]
+        EB[EventBridge Scheduler<br/>cron: 22:00 UTC / 19:00 BRT<br/>Execução Diária]
     end
 
-    subgraph "2️⃣ EXTRAÇÃO"
-        LE[Lambda Extract<br/>extract.py<br/>Python 3.10]
-        YF[Yahoo Finance API<br/>yfinance library]
+    subgraph "2️⃣ EXTRAÇÃO D-1"
+        LE[Lambda Extract<br/>extract.py<br/>Python 3.10<br/>300s timeout]
+        YF[Yahoo Finance API<br/>yfinance<br/>Dados de D-1]
     end
 
     subgraph "3️⃣ ARMAZENAMENTO RAW"
-        S3R[S3 Bucket - RAW<br/>raw/execution_date=YYYY-MM-DD/<br/>data_particao=YYYY-MM-DD/<br/>*.parquet]
-        MARKER[Arquivo _SUCCESS<br/>trigger marker]
+        S3R[S3 Bucket - RAW<br/>raw/YYYY-MM-DD/data.parquet<br/>Formato Hive Partitioning]
+        MARKER[Arquivo _SUCCESS<br/>Trigger Marker]
     end
 
     subgraph "4️⃣ ORQUESTRAÇÃO"
-        S3N[S3 Event Notification<br/>ObjectCreated: _SUCCESS]
-        LT[Lambda Trigger<br/>trigger_glue.py]
+        S3N[S3 Event Notification<br/>ObjectCreated: _SUCCESS<br/>filter_suffix]
+        LT[Lambda Trigger<br/>trigger_glue.py<br/>Verifica job ativo]
     end
 
     subgraph "5️⃣ TRANSFORMAÇÃO"
-        GJ[AWS Glue Job<br/>transform.py<br/>Polars + Python]
-        FE[Feature Engineering<br/>- Médias Móveis<br/>- Lags<br/>- Volatilidade]
-        AGG[Agregações<br/>- Mensais<br/>- Por Ação]
+        GJ[AWS Glue Job<br/>transform.py<br/>Polars + Python<br/>2x G.1X workers]
+        FE[Feature Engineering<br/>- Médias Móveis (7/14/30d)<br/>- Lags (1d/2d/3d)<br/>- Volatilidade 7d<br/>- Variação % dia]
+        AGG[Agregações Mensais<br/>- Preço médio/min/max<br/>- Volume total/médio<br/>- Dias negociação]
     end
 
     subgraph "6️⃣ ARMAZENAMENTO PROCESSADO"
-        S3REF[S3 Bucket - REFINED<br/>refined/data_pregao=YYYY-MM-DD/<br/>nome_acao=xxx/<br/>*.parquet]
-        S3AGG[S3 Bucket - AGGREGATED<br/>agg/<br/>*.parquet]
+        S3REF[S3 Bucket - REFINED<br/>refined/data_pregao=YYYY-MM-DD/<br/>data.parquet<br/>Hive Partitioning]
+        S3AGG[S3 Bucket - AGG<br/>agg/mes_referencia=YYYY-MM-DD/<br/>data.parquet<br/>Hive Partitioning]
     end
 
-    subgraph "7️⃣ CATALOGAÇÃO"
-        GC[Glue Catalog<br/>Database: default]
-        T1[Table: refined_stocks<br/>particionado]
-        T2[Table: aggregated_stocks_monthly]
-        CRAW[Glue Crawler<br/>backup diário 23:00 UTC]
+    subgraph "7️⃣ CATALOGAÇÃO AUTOMÁTICA"
+        GC[Glue Catalog<br/>Database: default<br/>Via boto3 + Athena]
+        T1[Table: refined_stocks<br/>Partição: data_pregao]
+        T2[Table: aggregated_stocks_monthly<br/>Partição: mes_referencia]
+        MSCK[MSCK REPAIR TABLE<br/>Descobre partições<br/>automaticamente]
     end
 
     subgraph "8️⃣ CONSULTA"
-        ATH[Amazon Athena<br/>Workgroup: etl_workgroup]
-        SQL[SQL Queries<br/>Interactive Analytics]
+        ATH[Amazon Athena<br/>Workgroup: etl_workgroup<br/>SQL Interactive Analytics]
+        SQL[Queries SQL<br/>Partições automáticas]
     end
 
     EB -->|Invoca diariamente| LE
-    LE -->|Extrai dados| YF
+    LE -->|Extrai D-1| YF
     YF -->|Retorna OHLCV| LE
-    LE -->|Salva Parquet| S3R
+    LE -->|Salva Parquet Hive| S3R
     S3R -->|Cria marker| MARKER
-    MARKER -->|Dispara evento| S3N
+    MARKER -->|Dispara evento S3| S3N
     S3N -->|Invoca| LT
     LT -->|glue.start_job_run| GJ
     GJ -->|Transforma| FE
     FE -->|Agrega| AGG
-    AGG -->|Salva refined| S3REF
-    AGG -->|Salva agregado| S3AGG
-    GJ -->|Cataloga via boto3| GC
+    AGG -->|Salva refined Hive| S3REF
+    AGG -->|Salva agg Hive| S3AGG
+    GJ -->|Cataloga boto3| GC
     GC -->|Cria/atualiza| T1
     GC -->|Cria/atualiza| T2
-    CRAW -->|Scan backup| S3REF
-    CRAW -->|Atualiza| GC
+    GJ -->|Executa via Athena| MSCK
+    MSCK -->|Descobre partições| GC
     GC -->|Metadata| ATH
     S3REF -->|Leitura| ATH
     S3AGG -->|Leitura| ATH
@@ -204,25 +204,27 @@ gantt
     EventBridge Trigger           :milestone, m1, 22:00, 0m
 
     section Extração
-    Lambda Extract Inicia         :e1, 22:00, 2m
-    Download Yahoo Finance        :e2, after e1, 5m
-    Processamento Pandas          :e3, after e2, 2m
-    Salvamento Parquet S3         :e4, after e3, 3m
+    Lambda Extract Inicia         :e1, 22:00, 1m
+    Download Yahoo Finance D-1    :e2, after e1, 3m
+    Processamento Local           :e3, after e2, 1m
+    Salvamento Parquet S3 Hive    :e4, after e3, 2m
     Criação _SUCCESS marker       :milestone, m2, after e4, 0m
 
     section Orquestração
     S3 Event Notification         :o1, after e4, 1m
     Lambda Trigger Glue           :o2, after o1, 1m
+    Verifica Job Ativo            :o3, after o2, 1m
 
     section Transformação
-    Glue Job Inicia               :t1, after o2, 1m
-    Leitura Raw Data              :t2, after t1, 2m
-    Conversão Wide→Long           :t3, after t2, 1m
-    Feature Engineering           :t4, after t3, 5m
-    Agregações Mensais            :t5, after t4, 2m
-    Salvamento Refined            :t6, after t5, 3m
-    Catalogação Glue              :t7, after t6, 2m
-    Glue Job Finaliza             :milestone, m3, after t7, 0m
+    Glue Job Inicia               :t1, after o3, 1m
+    Leitura Raw Data S3           :t2, after t1, 2m
+    Feature Engineering           :t3, after t2, 4m
+    Agregações Mensais            :t4, after t3, 2m
+    Salvamento Refined Hive       :t5, after t4, 2m
+    Salvamento Agg Hive           :t6, after t5, 1m
+    Catalogação Glue Catalog      :t7, after t6, 1m
+    MSCK REPAIR TABLE             :t8, after t7, 2m
+    Glue Job Finaliza             :milestone, m3, after t8, 0m
 
     section Disponibilização
     Dados Prontos Athena          :milestone, m4, after t7, 0m
@@ -230,36 +232,31 @@ gantt
 
 ---
 
-## Estrutura de Diretórios S3
+## Estrutura de Diretórios S3 (Formato Hive)
 
 ```
-📁 account-id-data-lake-bucket/
+📁 818392673747-data-lake-bucket/
 │
 ├── 📁 raw/                                    (BRONZE LAYER)
-│   └── 📁 execution_date=2026-01-14/
-│       └── 📁 run_20260114_220530/
-│           ├── 📁 data_particao=2025-07-15/
-│           │   └── 📄 part-0.parquet
-│           ├── 📁 data_particao=2025-07-16/
-│           │   └── 📄 part-0.parquet
-│           ├── ... (182 partições diárias - 6 meses)
-│           └── 📄 _SUCCESS
+│   ├── 📁 2026-01-14/                        (Data = D-1)
+│   │   └── 📄 data.parquet                   (Dados de D-1)
+│   ├── 📁 2026-01-15/
+│   │   └── 📄 data.parquet
+│   └── 📄 _SUCCESS                           (Trigger marker)
 │
 ├── 📁 refined/                                (SILVER LAYER)
-│   ├── 📁 data_pregao=2025-07-15/
-│   │   ├── 📁 nome_acao=itub4/
-│   │   │   └── 📄 data.parquet
-│   │   ├── 📁 nome_acao=bbdc4/
-│   │   │   └── 📄 data.parquet
-│   │   └── 📁 nome_acao=bbas3/
-│   │       └── 📄 data.parquet
-│   ├── 📁 data_pregao=2025-07-16/
-│   │   └── ... (3 ações por dia)
-│   └── ... (182 dias x 3 ações = 546 partições)
+│   ├── 📁 data_pregao=2026-01-14/           (Hive Partitioning)
+│   │   └── 📄 data.parquet                   (Todas as 3 ações)
+│   ├── 📁 data_pregao=2026-01-15/
+│   │   └── 📄 data.parquet
+│   └── ... (uma partição por dia)
 │
 └── 📁 agg/                                    (GOLD LAYER)
-    └── 📄 aggregated_data.parquet
-        (6 meses x 3 ações = ~18 registros mensais)
+    ├── 📁 mes_referencia=2025-07-01/        (Hive Partitioning)
+    │   └── 📄 data.parquet                   (Agregação mensal - 3 ações)
+    ├── 📁 mes_referencia=2025-08-01/
+    │   └── 📄 data.parquet
+    └── ... (uma partição por mês)
 ```
 
 ---
@@ -287,7 +284,9 @@ gantt
 | `lag_2d` | double | Preço D-2 | 28.50 |
 | `lag_3d` | double | Preço D-3 | 28.40 |
 
-**Particionamento:** `data_pregao` (string) + `nome_acao` (string)
+**Particionamento:** `data_pregao` (string) - Formato Hive
+
+**Catalogação:** Automática via MSCK REPAIR TABLE no Glue Job
 
 ---
 
@@ -550,15 +549,52 @@ LIMIT 10;
 
 ---
 
+## 🆕 Melhorias Implementadas (v2.0)
+
+### 1. **Extração Incremental (D-1)**
+- ✅ **Antes:** Extraía 180 dias (6 meses) a cada execução
+- ✅ **Agora:** Extrai apenas dados de D-1 (ontem)
+- ✅ **Benefício:** 180x menos dados transferidos, execução mais rápida
+
+### 2. **Dry Run Mode**
+- ✅ Lambda aceita `event.dry_run = true` para testes
+- ✅ Executa extração completa mas não salva no S3
+- ✅ Usado no smoke test do CI/CD para não poluir dados de produção
+
+### 3. **Hive Partitioning**
+- ✅ **Formato:** `coluna=valor/` ao invés de apenas `valor/`
+- ✅ **Exemplo:** `data_pregao=2026-01-14/` ao invés de `2026-01-14/`
+- ✅ **Benefício:** Compatibilidade nativa com Athena/Glue
+
+### 4. **Catalogação Automática via MSCK REPAIR TABLE**
+- ✅ Glue Job executa `MSCK REPAIR TABLE` via Athena client
+- ✅ Descobre TODAS as partições do S3 automaticamente
+- ✅ Fallback para registro manual se MSCK falhar
+- ✅ **Benefício:** Sem necessidade de queries manuais no Athena
+
+### 5. **Trigger Inteligente (_SUCCESS)**
+- ✅ Lambda Extract cria arquivo `_SUCCESS` após upload completo
+- ✅ S3 Event Notification trigga apenas com `filter_suffix = "_SUCCESS"`
+- ✅ **Benefício:** Evita triggers prematuros durante upload de múltiplos arquivos
+
+### 6. **Prevenção de Execuções Concorrentes**
+- ✅ Lambda Trigger verifica se já existe Glue Job rodando
+- ✅ Retorna 202 (Accepted) se job já ativo
+- ✅ **Benefício:** Evita sobrecarga e custos duplicados
+
+---
+
 ## Conclusão
 
 Esta arquitetura implementa um pipeline de dados **robusto, escalável e serverless** para análise de ações da B3, utilizando:
 
 ✅ **Event-driven architecture** para orquestração eficiente  
 ✅ **Camadas Bronze/Silver/Gold** para organização de dados  
-✅ **Particionamento inteligente** para performance de queries  
+✅ **Hive Partitioning** para compatibilidade nativa com Athena  
+✅ **Catalogação automática** via MSCK REPAIR TABLE  
+✅ **Extração incremental D-1** para eficiência  
 ✅ **Infrastructure as Code** para reprodutibilidade  
-✅ **Catalogação automática** para descoberta de dados  
+✅ **Dry run mode** para testes seguros  
 ✅ **Monitoramento integrado** via CloudWatch  
 ✅ **Custos otimizados** com serverless computing  
 
