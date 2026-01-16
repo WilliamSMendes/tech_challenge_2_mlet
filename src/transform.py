@@ -29,7 +29,7 @@ except ImportError:
 
 def save_partitioned_by_date(df: pl.DataFrame, output_path: str, date_column: str):
     """
-    Salva DataFrame particionado por data no formato: YYYY-MM-DD/data.parquet
+    Salva DataFrame particionado por data no formato Hive: coluna=YYYY-MM-DD/data.parquet
     
     Args:
         df: DataFrame Polars a ser salvo
@@ -49,7 +49,7 @@ def save_partitioned_by_date(df: pl.DataFrame, output_path: str, date_column: st
         bucket = output_path.replace('s3://', '').split('/')[0]
         prefix = '/'.join(output_path.replace('s3://', '').split('/')[1:])
     
-    print(f"  Salvando {len(dates)} partições...")
+    print(f"  Salvando {len(dates)} partições no formato Hive...")
     
     for row in dates.iter_rows(named=True):
         date_value = str(row[date_column])
@@ -58,25 +58,29 @@ def save_partitioned_by_date(df: pl.DataFrame, output_path: str, date_column: st
         # Remove a coluna de partição do DataFrame
         df_to_save = df_partition.drop(date_column)
         
+        # Formato Hive: coluna=valor
+        hive_partition = f"{date_column}={date_value}"
+        
         if is_s3:
             # Salva para S3
             buffer = BytesIO()
             df_to_save.write_parquet(buffer)
             buffer.seek(0)
             
-            s3_key = f"{prefix}/{date_value}/data.parquet" if prefix else f"{date_value}/data.parquet"
+            s3_key = f"{prefix}/{hive_partition}/data.parquet" if prefix else f"{hive_partition}/data.parquet"
             s3_client.put_object(Bucket=bucket, Key=s3_key, Body=buffer.getvalue())
-            print(f"    -> {date_value}: {len(df_partition)} registros -> s3://{bucket}/{s3_key}")
+            print(f"    -> {hive_partition}: {len(df_partition)} registros -> s3://{bucket}/{s3_key}")
         else:
             # Salva localmente
-            partition_dir = Path(output_path) / date_value
+            partition_dir = Path(output_path) / hive_partition
             partition_dir.mkdir(parents=True, exist_ok=True)
             
             output_file = partition_dir / 'data.parquet'
             df_to_save.write_parquet(output_file)
-            print(f"    -> {date_value}: {len(df_partition)} registros")
+            print(f"    -> {hive_partition}: {len(df_partition)} registros")
     
-    print(f"  [OK] Todas as partições salvas")
+    print(f"  [OK] Todas as partições salvas em formato Hive")
+
 
 print("=" * 80)
 print("INICIANDO TRANSFORMACAO DE DADOS - BLUE CHIPS B3")
@@ -374,7 +378,7 @@ try:
         
         for row in partitions.iter_rows(named=True):
             data_pregao = str(row['data_pregao'])
-            partition_location = f"{output_path_refined}/{data_pregao}/"
+            partition_location = f"{output_path_refined}/data_pregao={data_pregao}/"
             
             try:
                 glue_client.create_partition(
@@ -451,7 +455,7 @@ try:
         
         for row in partitions_agg.iter_rows(named=True):
             mes_referencia = str(row['mes_referencia'])
-            partition_location_agg = f"{output_path_agg}/{mes_referencia}/"
+            partition_location_agg = f"{output_path_agg}/mes_referencia={mes_referencia}/"
             
             try:
                 glue_client.create_partition(
