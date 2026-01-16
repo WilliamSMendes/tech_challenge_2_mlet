@@ -120,6 +120,6 @@ jobs:
       - name: Smoke test - Transform script
         run: |
           cd ..
-          pip install polars pyarrow pandas
+          pip install -r requirements.txt
           python tests/test_transform_smoke.py
         working-directory: ./terraform
