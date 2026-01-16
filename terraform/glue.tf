@@ -68,7 +68,6 @@ resource "aws_iam_policy" "glue_policy" {
         Resource = "*"
       }
     ]
-    ]
   })
 }
 
