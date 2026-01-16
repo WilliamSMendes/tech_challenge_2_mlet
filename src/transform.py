@@ -298,6 +298,20 @@ try:
     table_refined = 'refined_stocks'
     table_aggregated = 'aggregated_stocks_monthly'
     
+    # Garantir que as locations sejam S3 URIs válidos
+    if not output_path_refined.startswith('s3://'):
+        print(f"[WARN] output_path_refined não é S3 URI: {output_path_refined}")
+        print(f"       Pulando catalogação (apenas para ambiente local)")
+        raise Exception("Catalogacao requer S3 URIs")
+    
+    if not output_path_agg.startswith('s3://'):
+        print(f"[WARN] output_path_agg não é S3 URI: {output_path_agg}")
+        print(f"       Pulando catalogação (apenas para ambiente local)")
+        raise Exception("Catalogacao requer S3 URIs")
+    
+    print(f"[INFO] Location Refined: {output_path_refined}/")
+    print(f"[INFO] Location Aggregated: {output_path_agg}/\n")
+    
     refined_schema = [
         {'Name': 'nome_acao', 'Type': 'string'},
         {'Name': 'abertura', 'Type': 'double'},
@@ -328,6 +342,7 @@ try:
         {'Name': 'dias_negociacao', 'Type': 'bigint'},
     ]
     
+    # Criar/atualizar tabela refined
     try:
         glue_client.create_table(
             DatabaseName=database_name,
@@ -350,26 +365,56 @@ try:
         )
         print(f"[OK] Tabela '{table_refined}' criada no database '{database_name}'")
     except glue_client.exceptions.AlreadyExistsException:
-        glue_client.update_table(
-            DatabaseName=database_name,
-            TableInput={
-                'Name': table_refined,
-                'StorageDescriptor': {
-                    'Columns': refined_schema,
-                    'Location': output_path_refined + '/',
-                    'InputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat',
-                    'OutputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat',
-                    'SerdeInfo': {
-                        'SerializationLibrary': 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe'
+        # Tabela existe, tentar atualizar
+        try:
+            glue_client.update_table(
+                DatabaseName=database_name,
+                TableInput={
+                    'Name': table_refined,
+                    'StorageDescriptor': {
+                        'Columns': refined_schema,
+                        'Location': output_path_refined + '/',
+                        'InputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat',
+                        'OutputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat',
+                        'SerdeInfo': {
+                            'SerializationLibrary': 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe'
+                        }
+                    },
+                    'PartitionKeys': [
+                        {'Name': 'data_pregao', 'Type': 'string'}
+                    ],
+                    'TableType': 'EXTERNAL_TABLE'
+                }
+            )
+            print(f"[OK] Tabela '{table_refined}' atualizada no database '{database_name}'")
+        except Exception as update_error:
+            print(f"[WARN] Erro ao atualizar tabela: {update_error}")
+            print(f"[INFO] Deletando e recriando tabela '{table_refined}'...")
+            try:
+                glue_client.delete_table(DatabaseName=database_name, Name=table_refined)
+                glue_client.create_table(
+                    DatabaseName=database_name,
+                    TableInput={
+                        'Name': table_refined,
+                        'StorageDescriptor': {
+                            'Columns': refined_schema,
+                            'Location': output_path_refined + '/',
+                            'InputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat',
+                            'OutputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat',
+                            'SerdeInfo': {
+                                'SerializationLibrary': 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe'
+                            }
+                        },
+                        'PartitionKeys': [
+                            {'Name': 'data_pregao', 'Type': 'string'}
+                        ],
+                        'TableType': 'EXTERNAL_TABLE'
                     }
-                },
-                'PartitionKeys': [
-                    {'Name': 'data_pregao', 'Type': 'string'}
-                ],
-                'TableType': 'EXTERNAL_TABLE'
-            }
-        )
-        print(f"[OK] Tabela '{table_refined}' atualizada no database '{database_name}'")
+                )
+                print(f"[OK] Tabela '{table_refined}' recriada com sucesso")
+            except Exception as recreate_error:
+                print(f"[ERROR] Falha ao recriar tabela: {recreate_error}")
+                raise
     
     print("[INFO] Registrando particoes da tabela refined...")
     try:
