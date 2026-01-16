@@ -113,7 +113,7 @@ def save_to_parquet_partitioned(df: pd.DataFrame, output_dir: str):
     
     Args:
         df: DataFrame a ser salvo
-        output_dir: Diretorio de saida
+        output_dir: Diretório local onde salvar os arquivos particionados
     """
     df_copy = df.copy()
     
@@ -127,32 +127,51 @@ def save_to_parquet_partitioned(df: pd.DataFrame, output_dir: str):
     df_copy['Date'] = pd.to_datetime(df_copy['Date'])
     df_copy['data_particao'] = df_copy['Date'].dt.strftime('%Y-%m-%d')
     
-    print(f"  Particoes unicas: {df_copy['data_particao'].nunique()}")
+    particoes = df_copy['data_particao'].unique()
+    print(f"  Particoes unicas: {len(particoes)}")
+    print(f"  Salvando em: {output_dir}")
     
-    table = pa.Table.from_pandas(df_copy, preserve_index=False)
+    # Salva cada partição manualmente sem o prefixo "data_particao="
+    for particao in particoes:
+        df_particao = df_copy[df_copy['data_particao'] == particao].copy()
+        df_particao = df_particao.drop(columns=['data_particao'])
+        
+        particao_dir = Path(output_dir) / particao
+        particao_dir.mkdir(parents=True, exist_ok=True)
+        
+        arquivo_saida = particao_dir / 'data.parquet'
+        df_particao.to_parquet(arquivo_saida, index=False)
+        print(f"    -> {particao}: {len(df_particao)} registros")
     
-    pq.write_to_dataset(
-        table, 
-        root_path=output_dir, 
-        partition_cols=['data_particao'],
-        existing_data_behavior='overwrite_or_ignore'
-    )
-    
-    print(f"[OK] Dados salvos em: {output_dir}")
+    print(f"  [OK] Dados salvos localmente")
 
-
-def upload_to_s3(df: pd.DataFrame, bucket: str, s3_prefix: str):
+def upload_to_s3(local_dir: str, bucket: str, s3_prefix: str):
     """
-    Faz upload de um diretorio local para S3.
+    Faz upload de um diretório local particionado para S3, mantendo a estrutura.
     
     Args:
-        df: DataFrame contendo os dados a serem enviados
+        local_dir: Diretório local contendo os arquivos particionados
         bucket: Nome do bucket S3
-        s3_prefix: Prefixo (caminho) no S3
+        s3_prefix: Prefixo (caminho) no S3 (ex: 'raw')
     """
     try:
-        s3_client.put_object(Bucket=bucket, Key=s3_prefix, Body=df.to_parquet(index=False))
-        print(f"[OK] DF com {df.shape[0]} linhas enviados para S3")
+        upload_count = 0
+        local_path = Path(local_dir)
+        
+        # Percorre todos os arquivos no diretório particionado
+        for file_path in local_path.rglob('*.parquet'):
+            # Calcula o caminho relativo para manter a estrutura de partições
+            relative_path = file_path.relative_to(local_path)
+            s3_key = f"{s3_prefix.strip('/')}/{relative_path.as_posix()}"
+            
+            print(f"  Uploading: {relative_path} -> s3://{bucket}/{s3_key}")
+            
+            with open(file_path, 'rb') as f:
+                s3_client.put_object(Bucket=bucket, Key=s3_key, Body=f.read())
+            
+            upload_count += 1
+        
+        print(f"[OK] {upload_count} arquivos enviados para S3: s3://{bucket}/{s3_prefix}")
         
     except Exception as e:
         print(f"[ERROR] Falha ao enviar para S3: {type(e).__name__}: {str(e)}")
@@ -217,16 +236,18 @@ def lambda_handler(event, context):
                 })
             }
         
-        #output_dir = '/tmp/raw_data'
-        #Path(output_dir).mkdir(parents=True, exist_ok=True)
+        # Salva localmente em formato particionado
+        output_dir = '/tmp/raw_data'
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
         
-        #save_to_parquet_partitioned(df, output_dir)
+        print("\n[INFO] Salvando dados em formato Parquet particionado...")
+        save_to_parquet_partitioned(df, output_dir)
         
-        #timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        s3_prefix = f"{bucket_name}/raw/"
+        # Upload para S3
+        s3_prefix = "raw"
         
-        print(f"\nFazendo upload para S3: s3://{s3_prefix}")
-        upload_to_s3(df, bucket_name, s3_prefix)
+        print(f"\n[INFO] Fazendo upload para S3: s3://{bucket_name}/{s3_prefix}")
+        upload_to_s3(output_dir, bucket_name, s3_prefix)
         
         #success_key = f"{s3_prefix}/_SUCCESS"
         #s3_client.put_object(Bucket=bucket_name, Key=success_key, Body=b'')
@@ -262,8 +283,3 @@ if __name__ == "__main__":
         start_date.strftime('%Y-%m-%d'),
         end_date.strftime('%Y-%m-%d')
     )
-    
-    if not df.empty:
-        output_dir = './raw'
-        save_to_parquet_partitioned(df, output_dir)
-        print(f"\n[OK] Dados salvos localmente em: {output_dir}")

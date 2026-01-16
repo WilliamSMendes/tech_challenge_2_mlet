@@ -6,8 +6,11 @@ Processa dados brutos (raw), aplica feature engineering e salva em:
 """
 import sys
 import os
+from pathlib import Path
+from io import BytesIO
 import polars as pl
 import polars.selectors as cs
+import boto3
 
 try:
     from awsglue.utils import getResolvedOptions
@@ -23,6 +26,57 @@ except ImportError:
                 if key in options and i + 1 < len(args):
                     result[key] = args[i + 1]
         return result
+
+def save_partitioned_by_date(df: pl.DataFrame, output_path: str, date_column: str):
+    """
+    Salva DataFrame particionado por data no formato: YYYY-MM-DD/data.parquet
+    
+    Args:
+        df: DataFrame Polars a ser salvo
+        output_path: Caminho base de saída (local ou S3)
+        date_column: Nome da coluna de data para particionamento
+    """
+    import boto3
+    from io import BytesIO
+    
+    # Obtém as datas únicas
+    dates = df.select(pl.col(date_column)).unique().sort(date_column)
+    
+    is_s3 = output_path.startswith('s3://')
+    
+    if is_s3:
+        s3_client = boto3.client('s3')
+        bucket = output_path.replace('s3://', '').split('/')[0]
+        prefix = '/'.join(output_path.replace('s3://', '').split('/')[1:])
+    
+    print(f"  Salvando {len(dates)} partições...")
+    
+    for row in dates.iter_rows(named=True):
+        date_value = str(row[date_column])
+        df_partition = df.filter(pl.col(date_column) == row[date_column])
+        
+        # Remove a coluna de partição do DataFrame
+        df_to_save = df_partition.drop(date_column)
+        
+        if is_s3:
+            # Salva para S3
+            buffer = BytesIO()
+            df_to_save.write_parquet(buffer)
+            buffer.seek(0)
+            
+            s3_key = f"{prefix}/{date_value}/data.parquet" if prefix else f"{date_value}/data.parquet"
+            s3_client.put_object(Bucket=bucket, Key=s3_key, Body=buffer.getvalue())
+            print(f"    -> {date_value}: {len(df_partition)} registros -> s3://{bucket}/{s3_key}")
+        else:
+            # Salva localmente
+            partition_dir = Path(output_path) / date_value
+            partition_dir.mkdir(parents=True, exist_ok=True)
+            
+            output_file = partition_dir / 'data.parquet'
+            df_to_save.write_parquet(output_file)
+            print(f"    -> {date_value}: {len(df_partition)} registros")
+    
+    print(f"  [OK] Todas as partições salvas")
 
 print("=" * 80)
 print("INICIANDO TRANSFORMACAO DE DADOS - BLUE CHIPS B3")
@@ -184,16 +238,11 @@ else:
     output_path_refined = f"s3://{bucket_name}/refined"
 
 print(f"[INFO] Salvando dados REFINED em: {output_path_refined}")
-print(f"   Particionamento: data_pregao + nome_acao\n")
+print(f"   Particionamento: data_pregao\n")
 
-df_final.write_parquet(
-    output_path_refined,
-    use_pyarrow=True,
-    partition_by=["data_pregao", "nome_acao"],
-    compression="snappy"
-)
+save_partitioned_by_date(df_final, output_path_refined, "data_pregao")
 
-print("[OK] Dados refined salvos com sucesso!\n")
+print("\n[OK] Dados refined salvos com sucesso!\n")
 
 # ============================================================================
 # 4. DADOS AGREGADOS MENSAIS
@@ -224,15 +273,12 @@ if is_local:
 else:
     output_path_agg = f"s3://{bucket_name}/agg"
 
-print(f"[INFO] Salvando dados AGREGADOS em: {output_path_agg}\n")
+print(f"[INFO] Salvando dados AGREGADOS em: {output_path_agg}")
+print(f"   Particionamento: mes_referencia\n")
 
-df_agregado.write_parquet(
-    output_path_agg,
-    use_pyarrow=True,
-    compression="snappy"
-)
+save_partitioned_by_date(df_agregado, output_path_agg, "mes_referencia")
 
-print("[OK] Dados agregados salvos com sucesso!\n")
+print("\n[OK] Dados agregados salvos com sucesso!\n")
 
 # ============================================================================
 # 5. CATALOGACAO AUTOMATICA NO GLUE CATALOG
@@ -249,6 +295,7 @@ try:
     table_aggregated = 'aggregated_stocks_monthly'
     
     refined_schema = [
+        {'Name': 'nome_acao', 'Type': 'string'},
         {'Name': 'abertura', 'Type': 'double'},
         {'Name': 'fechamento', 'Type': 'double'},
         {'Name': 'max', 'Type': 'double'},
@@ -267,7 +314,6 @@ try:
     
     aggregated_schema = [
         {'Name': 'nome_acao', 'Type': 'string'},
-        {'Name': 'mes_referencia', 'Type': 'date'},
         {'Name': 'preco_medio_mensal', 'Type': 'double'},
         {'Name': 'preco_minimo_mensal', 'Type': 'double'},
         {'Name': 'preco_maximo_mensal', 'Type': 'double'},
@@ -293,8 +339,7 @@ try:
                     }
                 },
                 'PartitionKeys': [
-                    {'Name': 'data_pregao', 'Type': 'string'},
-                    {'Name': 'nome_acao', 'Type': 'string'}
+                    {'Name': 'data_pregao', 'Type': 'string'}
                 ],
                 'TableType': 'EXTERNAL_TABLE'
             }
@@ -315,8 +360,7 @@ try:
                     }
                 },
                 'PartitionKeys': [
-                    {'Name': 'data_pregao', 'Type': 'string'},
-                    {'Name': 'nome_acao', 'Type': 'string'}
+                    {'Name': 'data_pregao', 'Type': 'string'}
                 ],
                 'TableType': 'EXTERNAL_TABLE'
             }
@@ -325,20 +369,19 @@ try:
     
     print("[INFO] Registrando particoes da tabela refined...")
     try:
-        partitions = df_final.select(['data_pregao', 'nome_acao']).unique().sort(['data_pregao', 'nome_acao'])
+        partitions = df_final.select(['data_pregao']).unique().sort(['data_pregao'])
         partitions_added = 0
         
         for row in partitions.iter_rows(named=True):
             data_pregao = str(row['data_pregao'])
-            nome_acao = row['nome_acao']
-            partition_location = f"{output_path_refined}/data_pregao={data_pregao}/nome_acao={nome_acao}/"
+            partition_location = f"{output_path_refined}/{data_pregao}/"
             
             try:
                 glue_client.create_partition(
                     DatabaseName=database_name,
                     TableName=table_refined,
                     PartitionInput={
-                        'Values': [data_pregao, nome_acao],
+                        'Values': [data_pregao],
                         'StorageDescriptor': {
                             'Columns': refined_schema,
                             'Location': partition_location,
@@ -372,6 +415,9 @@ try:
                         'SerializationLibrary': 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe'
                     }
                 },
+                'PartitionKeys': [
+                    {'Name': 'mes_referencia', 'Type': 'string'}
+                ],
                 'TableType': 'EXTERNAL_TABLE'
             }
         )
@@ -390,10 +436,47 @@ try:
                         'SerializationLibrary': 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe'
                     }
                 },
+                'PartitionKeys': [
+                    {'Name': 'mes_referencia', 'Type': 'string'}
+                ],
                 'TableType': 'EXTERNAL_TABLE'
             }
         )
         print(f"[OK] Tabela '{table_aggregated}' atualizada no database '{database_name}'")
+    
+    print("[INFO] Registrando particoes da tabela agregada...")
+    try:
+        partitions_agg = df_agregado.select(['mes_referencia']).unique().sort(['mes_referencia'])
+        partitions_agg_added = 0
+        
+        for row in partitions_agg.iter_rows(named=True):
+            mes_referencia = str(row['mes_referencia'])
+            partition_location_agg = f"{output_path_agg}/{mes_referencia}/"
+            
+            try:
+                glue_client.create_partition(
+                    DatabaseName=database_name,
+                    TableName=table_aggregated,
+                    PartitionInput={
+                        'Values': [mes_referencia],
+                        'StorageDescriptor': {
+                            'Columns': aggregated_schema,
+                            'Location': partition_location_agg,
+                            'InputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat',
+                            'OutputFormat': 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat',
+                            'SerdeInfo': {
+                                'SerializationLibrary': 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe'
+                            }
+                        }
+                    }
+                )
+                partitions_agg_added += 1
+            except glue_client.exceptions.AlreadyExistsException:
+                pass
+        
+        print(f"[OK] {partitions_agg_added} particoes registradas para tabela agregada")
+    except Exception as e:
+        print(f"[WARN] Erro ao registrar particoes agregadas: {str(e)}")
     
     print("\n[OK] Catalogacao concluida com sucesso!\n")
     
