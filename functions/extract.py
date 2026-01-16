@@ -249,9 +249,11 @@ def lambda_handler(event, context):
         print(f"\n[INFO] Fazendo upload para S3: s3://{bucket_name}/{s3_prefix}")
         upload_to_s3(output_dir, bucket_name, s3_prefix)
         
-        #success_key = f"{s3_prefix}/_SUCCESS"
-        #s3_client.put_object(Bucket=bucket_name, Key=success_key, Body=b'')
-        #print(f"[OK] Marker criado: s3://{bucket_name}/{success_key}")
+        # Cria marker _SUCCESS para triggar a Lambda de transformação
+        success_key = f"{s3_prefix}/_SUCCESS"
+        s3_client.put_object(Bucket=bucket_name, Key=success_key, Body=b'')
+        print(f"[OK] Marker criado: s3://{bucket_name}/{success_key}")
+        print("   -> Isso vai triggar a Lambda s3_trigger_glue_transform")
         
         print("\n" + "=" * 60)
         print("[OK] EXTRACAO CONCLUIDA COM SUCESSO!")
